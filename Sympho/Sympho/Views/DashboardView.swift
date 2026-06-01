@@ -11,306 +11,188 @@ import SwiftData
 struct DashboardView: View {
     @Environment(\.modelContext) private var modelContext
     var onOpenDomain: (Domain) -> Void = { _ in }
-    
-    // SwiftData Queries
-    @Query(filter: #Predicate<Node> { $0.statusValue == "active" && !$0.isDeletedLocally }, sort: \Node.updatedAt, order: .reverse)
+
+    @Query(filter: #Predicate<Node> { $0.statusValue == "active" && !$0.isDeletedLocally },
+           sort: \Node.updatedAt, order: .reverse)
     private var activeNodes: [Node]
-    
-    @Query(filter: #Predicate<Node> { ($0.isOrphan || ($0.module == nil && $0.project == nil)) && !$0.isDeletedLocally })
-    private var orphanNodes: [Node]
-    
-    @Query(
-        filter: #Predicate<Domain> { !$0.isArchived && !$0.isDeletedLocally },
-        sort: [SortDescriptor(\Domain.sortIndex), SortDescriptor(\Domain.title)]
-    )
+
+    @Query(filter: #Predicate<Domain> { !$0.isArchived && !$0.isDeletedLocally },
+           sort: [SortDescriptor(\Domain.sortIndex), SortDescriptor(\Domain.title)])
     private var domains: [Domain]
-    
-    @Query(filter: #Predicate<Project> { $0.isPinned && !$0.isDeletedLocally }, sort: \Project.updatedAt, order: .reverse)
+
+    @Query(filter: #Predicate<Project> { $0.isPinned && !$0.isDeletedLocally },
+           sort: \Project.updatedAt, order: .reverse)
     private var pinnedProjects: [Project]
-    
+
+    @Query(filter: #Predicate<Track> { !$0.isDeletedLocally },
+           sort: \Track.updatedAt, order: .reverse)
+    private var allTracks: [Track]
+
+    private var visibleTracks: [Track] {
+        allTracks.filter { track in
+            guard let domain = track.domain else { return false }
+            return !domain.isArchived && !domain.isDeletedLocally
+        }
+    }
+
     @State private var selectedNodeForDetails: Node? = nil
-    @State private var inlineCaptureText: String = ""
-    
+    @State private var captureText = ""
+
+    private let domainColumns = [
+        GridItem(.flexible(), spacing: 14),
+        GridItem(.flexible(), spacing: 14)
+    ]
+
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: SymphoTheme.sectionSpacing) {
-                // Header (Sans-Serif, letter-spaced)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Command Center")
-                        .editorialHeader()
-                    Text("Resume your active learning paths and workspaces.")
-                        .metadataSans()
-                }
-                .padding(.top, 16)
-                
-                // 1. Inbox Captures Alert Banner (Only shows if there are unprocessed items)
-                if !orphanNodes.isEmpty {
-                    inboxAlertBanner
-                }
-                
-                // 2. Primary Focus Area
-                VStack(alignment: .leading, spacing: 14) {
-                    Text("Active Focus Target")
-                        .editorialTitle()
-                    
-                    if let primaryNode = activeNodes.first {
-                        FocusTargetBlock(node: primaryNode) {
-                            selectedNodeForDetails = primaryNode
-                        }
-                    } else {
-                        emptyFocusView
+            VStack(alignment: .leading, spacing: 40) {
+
+                // ── 1. Hero: primary active node ────────────────────
+                if let primary = activeNodes.first {
+                    HomeHeroCard(node: primary) {
+                        selectedNodeForDetails = primary
                     }
                 }
-                
-                MinimalDivider()
-                
-                // 3. Grid of Workspaces & Secondary Items
-                HStack(alignment: .top, spacing: SymphoTheme.gridSpacing) {
-                    // Left Side: Active Queue & Domains
-                    VStack(alignment: .leading, spacing: SymphoTheme.sectionSpacing) {
-                        // Active Queue
-                        VStack(alignment: .leading, spacing: 14) {
-                            Text("Active Learning Queue")
-                                .editorialTitle()
-                            
-                            if activeNodes.count <= 1 {
-                                Text("No other active items in your queue.")
-                                    .captionSans()
-                            } else {
-                                VStack(spacing: 0) {
-                                    ForEach(activeNodes.dropFirst()) { node in
-                                        FlatQueueRow(node: node) {
-                                            selectedNodeForDetails = node
-                                        }
-                                        if node.id != activeNodes.last?.id {
-                                            MinimalDivider()
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        
-                        MinimalDivider()
-                        
-                        // Domain activity
-                        VStack(alignment: .leading, spacing: 14) {
-                            Text("Study Domains")
-                                .editorialTitle()
-                            
-                            if domains.isEmpty {
-                                Text("No domains created. Set them up in Domains.")
-                                    .captionSans()
-                            } else {
-                                VStack(spacing: 4) {
-                                    ForEach(domains) { domain in
-                                        FlatDomainActivityRow(domain: domain) {
-                                            onOpenDomain(domain)
-                                        }
+
+                // ── 2. Tracks: horizontal scroll ────────────────────
+                if !visibleTracks.isEmpty {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 12) {
+                            ForEach(visibleTracks) { track in
+                                HomeTrackCard(track: track) {
+                                    if let domain = track.domain {
+                                        onOpenDomain(domain)
                                     }
                                 }
                             }
                         }
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    
-                    // Right Side: Pinned Projects & Inline Capture
-                    VStack(alignment: .leading, spacing: SymphoTheme.sectionSpacing) {
-                        // Pinned Workspaces
-                        VStack(alignment: .leading, spacing: 14) {
-                            Text("Pinned Workspaces")
-                                .editorialTitle()
-                            
-                            if pinnedProjects.isEmpty {
-                                Text("No pinned projects. Pin a project to place it here.")
-                                    .captionSans()
-                                    .padding(12)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .background(SymphoTheme.dividerColor.opacity(0.4))
-                                    .cornerRadius(SymphoTheme.cornerRadius)
-                            } else {
-                                VStack(spacing: 8) {
-                                    ForEach(pinnedProjects) { project in
-                                        FlatProjectCard(project: project)
-                                    }
-                                }
-                            }
+                }
+
+                // ── 3. Pinned projects ──────────────────────────────
+                if !pinnedProjects.isEmpty {
+                    VStack(alignment: .leading, spacing: 12) {
+                        ForEach(pinnedProjects) { project in
+                            HomePinnedCard(project: project)
                         }
-                        
-                        // Quick Capture Input Box
-                        VStack(alignment: .leading, spacing: 14) {
-                            Text("Quick Capture")
-                                .editorialTitle()
-                            
-                            VStack(spacing: 10) {
-                                TextField("Add note or link...", text: $inlineCaptureText, onCommit: handleCapture)
-                                    .textFieldStyle(.plain)
-                                    .padding(10)
-                                    .background(SymphoTheme.elevatedCanvas.opacity(0.62))
-                                    .cornerRadius(SymphoTheme.cornerRadius)
-                                    .overlay(
-                                        RoundedRectangle(cornerRadius: SymphoTheme.cornerRadius)
-                                            .stroke(SymphoTheme.dividerColor, lineWidth: 1)
-                                    )
-                                
-                                Button(action: handleCapture) {
-                                    Text("Capture to Inbox")
-                                        .font(.caption)
-                                        .fontWeight(.semibold)
-                                        .foregroundColor(.white)
-                                        .frame(maxWidth: .infinity)
-                                        .padding(.vertical, 8)
-                                        .background(SymphoTheme.primaryAction)
-                                        .cornerRadius(SymphoTheme.cornerRadius)
-                                }
-                                .buttonStyle(.plain)
-                                .disabled(inlineCaptureText.trimmingCharacters(in: .whitespaces).isEmpty)
+                    }
+                }
+
+                // ── 4. Domains grid ─────────────────────────────────
+                if !domains.isEmpty {
+                    LazyVGrid(columns: domainColumns, spacing: 14) {
+                        ForEach(domains) { domain in
+                            HomeDomainCard(domain: domain) {
+                                onOpenDomain(domain)
                             }
                         }
                     }
-                    .frame(width: 260)
                 }
+
+                // ── 5. Capture ──────────────────────────────────────
+                capturePill
             }
-            .padding(SymphoTheme.outerPadding)
+            .padding(36)
         }
         .sheet(item: $selectedNodeForDetails) { node in
             NodeDetailSheet(node: node)
         }
     }
-    
-    // MARK: - Inbox Alert Banner View
-    
-    private var inboxAlertBanner: some View {
-        HStack {
-            Image(systemName: "tray.and.arrow.down")
-                .foregroundColor(SymphoTheme.primaryText)
-                .font(.headline)
-            
-            Text("You have **\(orphanNodes.count)** unprocessed items in your Inbox.")
-                .bodySans()
-            
-            Spacer()
-            
-            Text("Process Now")
-                .font(.caption)
-                .fontWeight(.bold)
-                .foregroundColor(.white)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 4)
-            .background(SymphoTheme.primaryAction)
-                .cornerRadius(4)
+
+    // MARK: - Capture Pill
+
+    private var capturePill: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "plus")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(SymphoTheme.tertiaryText)
+
+            TextField("Capture a note or link…", text: $captureText)
+                .textFieldStyle(.plain)
+                .font(.system(size: 13))
+                .onSubmit { handleCapture() }
         }
-        .padding(12)
-        .background(SymphoTheme.elevatedCanvas.opacity(0.62))
-        .cornerRadius(SymphoTheme.cornerRadius)
-        .overlay(
-            RoundedRectangle(cornerRadius: SymphoTheme.cornerRadius)
-                .stroke(SymphoTheme.dividerColor, lineWidth: 1)
-        )
+        .padding(.horizontal, 18)
+        .frame(height: 42)
+        .glassEffect(.regular.interactive(), in: .capsule)
     }
-    
-    // MARK: - Empty Focus View
-    
-    private var emptyFocusView: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("No active learning targets.")
-                .font(.system(size: 13, weight: .medium).italic())
-                .foregroundColor(SymphoTheme.secondaryText)
-            Text("Activate nodes within Domains to surface them here.")
-                .captionSans()
-        }
-        .padding(16)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(SymphoTheme.elevatedCanvas.opacity(0.62))
-        .cornerRadius(SymphoTheme.cornerRadius)
-    }
-    
-    // MARK: - Actions
-    
+
     private func handleCapture() {
-        let trimmed = inlineCaptureText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = captureText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        
+
         let isLink = trimmed.lowercased().hasPrefix("http://") || trimmed.lowercased().hasPrefix("https://")
-        
+
         let node = Node(
             title: isLink ? "Link: \(trimmed)" : trimmed,
-            desc: "Dashboard capture",
+            desc: "",
             isOrphan: true
         )
-        
+
         if isLink {
             let res = Resource(title: "Captured Link", urlString: trimmed, resourceType: .url)
             modelContext.insert(res)
             node.resources.append(res)
         }
-        
+
         modelContext.insert(node)
         try? modelContext.save()
-        inlineCaptureText = ""
+        captureText = ""
     }
 }
 
-// MARK: - Subcomponents (Flat & Shadowless HIG)
+// MARK: - Hero Card (Primary Focus)
 
-struct FocusTargetBlock: View {
+private struct HomeHeroCard: View {
     @Environment(\.modelContext) private var modelContext
     let node: Node
-    var onOpenDetails: () -> Void
-    
+    let onOpen: () -> Void
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            // Category Path
-            HStack {
-                if let module = node.module {
-                    Text("\(module.track?.domain?.title ?? module.domain?.title ?? "Syllabus")  ›  \(module.title)".uppercased())
-                        .font(.system(size: 9, weight: .bold))
-                        .foregroundColor(SymphoTheme.secondaryText)
-                } else if let project = node.project {
-                    Text("PROJECT  ›  \(project.title)".uppercased())
-                        .font(.system(size: 9, weight: .bold))
-                        .foregroundColor(SymphoTheme.secondaryText)
-                }
-                Spacer()
-                
-                if node.priority == .critical {
-                    Text("CRITICAL DEBT")
-                        .font(.system(size: 8, weight: .bold))
-                        .foregroundColor(SymphoTheme.colorCritical)
-                }
+        VStack(alignment: .leading, spacing: 16) {
+
+            // Breadcrumb
+            if let path = breadcrumb {
+                Text(path)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(SymphoTheme.tertiaryText)
             }
-            
-            // Title & Desc
-            VStack(alignment: .leading, spacing: 4) {
-                Text(node.title)
-                    .font(.system(size: 20, weight: .regular, design: .default))
-                    .foregroundColor(SymphoTheme.primaryText)
-                
-                if !node.desc.isEmpty {
-                    Text(node.desc)
-                        .bodySans()
-                        .foregroundColor(SymphoTheme.secondaryText)
-                }
+
+            // Title — larger, the hero of the page
+            Text(node.title)
+                .font(.system(size: 22, weight: .semibold))
+                .foregroundStyle(SymphoTheme.primaryText)
+                .lineLimit(2)
+                .kerning(-0.3)
+
+            // Description
+            if !node.desc.isEmpty {
+                Text(node.desc)
+                    .font(.system(size: 13))
+                    .foregroundStyle(SymphoTheme.secondaryText)
+                    .lineSpacing(3)
+                    .lineLimit(3)
             }
-            
-            // Connected Resources
+
+            // Attached resources
             let resources = node.resources.filter { !$0.isDeletedLocally }
             if !resources.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 8) {
+                    HStack(spacing: 6) {
                         ForEach(resources) { res in
                             if let url = URL(string: res.urlString) {
                                 Link(destination: url) {
-                                    HStack(spacing: 6) {
+                                    HStack(spacing: 5) {
                                         Image(systemName: res.resourceType.iconName)
+                                            .font(.system(size: 10))
                                         Text(res.title)
                                             .lineLimit(1)
                                     }
                                     .font(.system(size: 11, weight: .medium))
-                                    .foregroundColor(SymphoTheme.primaryText)
+                                    .foregroundStyle(SymphoTheme.primaryText)
                                     .padding(.vertical, 5)
                                     .padding(.horizontal, 9)
-                                    .background(SymphoTheme.elevatedCanvas.opacity(0.72))
-                                    .cornerRadius(4)
+                                    .glassEffect(.regular.interactive(), in: .capsule)
                                 }
                                 .buttonStyle(.plain)
                             }
@@ -318,199 +200,215 @@ struct FocusTargetBlock: View {
                     }
                 }
             }
-            
-            MinimalDivider()
-            
+
             // Actions
             HStack {
-                Button(action: {
-                    withAnimation {
+                Button {
+                    withAnimation(.snappy(duration: 0.2)) {
                         node.status = .mastered
                         node.isSynced = false
                         try? modelContext.save()
                     }
-                }) {
-                    HStack(spacing: 4) {
-                        Image(systemName: "checkmark")
-                        Text("Mark Concept Mastered")
-                    }
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundColor(.white)
-                    .padding(.vertical, 7)
-                    .padding(.horizontal, 14)
-                    .background(SymphoTheme.primaryAction)
-                    .cornerRadius(SymphoTheme.cornerRadius)
+                } label: {
+                    Label("Mastered", systemImage: "checkmark")
+                        .font(.system(size: 11, weight: .medium))
                 }
-                .buttonStyle(.plain)
-                
+                .buttonStyle(.glass)
+                .controlSize(.small)
+
                 Spacer()
-                
-                Button(action: onOpenDetails) {
-                    Text("Open Workspace details")
-                        .font(.system(size: 11))
-                        .foregroundColor(SymphoTheme.secondaryText)
+
+                Button(action: onOpen) {
+                    HStack(spacing: 3) {
+                        Text("Open")
+                        Image(systemName: "arrow.up.right")
+                            .font(.system(size: 9))
+                    }
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(SymphoTheme.secondaryText)
                 }
                 .buttonStyle(.plain)
             }
         }
-        .padding(16)
-        .background(SymphoTheme.elevatedCanvas.opacity(0.50))
-        .cornerRadius(SymphoTheme.cornerRadius)
-        .overlay(
-            RoundedRectangle(cornerRadius: SymphoTheme.cornerRadius)
-                .stroke(SymphoTheme.dividerColor, lineWidth: 1)
-        )
+        .padding(24)
+        .glassEffect(.regular, in: .rect(cornerRadius: 20))
     }
-}
 
-struct FlatQueueRow: View {
-    @Environment(\.modelContext) private var modelContext
-    let node: Node
-    var onOpen: () -> Void
-    
-    var body: some View {
-        HStack {
-            Image(systemName: "circle")
-                .foregroundColor(SymphoTheme.secondaryText)
-                .font(.system(size: 13))
-            
-            VStack(alignment: .leading, spacing: 2) {
-                Text(node.title)
-                    .font(.system(size: 13, weight: .regular))
-                    .foregroundColor(SymphoTheme.primaryText)
-                
-                if let module = node.module {
-                    Text(module.title)
-                        .font(.system(size: 10))
-                        .foregroundColor(SymphoTheme.secondaryText)
-                }
-            }
-            
-            Spacer()
-            
-            Button("Complete") {
-                withAnimation {
-                    node.status = .mastered
-                    node.isSynced = false
-                    try? modelContext.save()
-                }
-            }
-            .font(.system(size: 10, weight: .medium))
-            .buttonStyle(.plain)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 3)
-            .background(SymphoTheme.dividerColor)
-            .cornerRadius(4)
-            
-            Button(action: onOpen) {
-                Image(systemName: "arrow.up.right.square")
-                    .foregroundColor(SymphoTheme.secondaryText)
-                    .font(.caption)
-            }
-            .buttonStyle(.plain)
+    private var breadcrumb: String? {
+        if let module = node.module {
+            let domain = module.track?.domain?.title ?? module.domain?.title ?? ""
+            return domain.isEmpty ? module.title : "\(domain) › \(module.title)"
         }
-        .padding(.vertical, 8)
+        if let project = node.project {
+            return project.title
+        }
+        return nil
     }
 }
 
-struct FlatDomainActivityRow: View {
-    let domain: Domain
-    var onOpen: () -> Void
-    
+// MARK: - Track Card (Horizontal Scroll)
+
+private struct HomeTrackCard: View {
+    let track: Track
+    let onOpen: () -> Void
+
     var body: some View {
         Button(action: onOpen) {
-            HStack(spacing: 10) {
-                Image(systemName: DomainIcon.validated(domain.iconName))
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(SymphoTheme.primaryText)
-                    .frame(width: 22, height: 22)
-                    .background {
-                        RoundedRectangle(cornerRadius: 5, style: .continuous)
-                            .fill(SymphoTheme.elevatedCanvas.opacity(0.72))
-                    }
+            VStack(alignment: .leading, spacing: 8) {
 
-                VStack(alignment: .leading, spacing: 2) {
+                // Parent domain
+                if let domain = track.domain {
                     Text(domain.title)
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundStyle(SymphoTheme.primaryText)
+                        .font(.system(size: 10))
+                        .foregroundStyle(SymphoTheme.tertiaryText)
                         .lineLimit(1)
-
-                    if let activeNode = latestActiveNode {
-                        Text(activeNode.title)
-                            .font(.system(size: 11))
-                            .foregroundStyle(SymphoTheme.secondaryText)
-                            .lineLimit(1)
-                    } else {
-                        Text("No active focus")
-                            .font(.system(size: 11))
-                            .foregroundStyle(SymphoTheme.tertiaryText)
-                    }
                 }
 
-                Spacer(minLength: 8)
+                // Track title
+                Text(track.title)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(SymphoTheme.primaryText)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
 
-                Text("\(activeNodes.count)")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(SymphoTheme.secondaryText)
+                Spacer(minLength: 0)
 
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(SymphoTheme.tertiaryText)
+                // Progress fraction
+                let nodes = track.allNodes
+                let mastered = nodes.filter { $0.status == .mastered }.count
+                if !nodes.isEmpty {
+                    Text("\(mastered)/\(nodes.count)")
+                        .font(.system(size: 11, weight: .medium, design: .monospaced))
+                        .foregroundStyle(SymphoTheme.tertiaryText)
+                }
             }
-            .padding(.vertical, 7)
+            .frame(width: 220, alignment: .leading)
+            .padding(16)
+            .frame(height: 120)
+            .contentShape(.rect(cornerRadius: 14))
         }
         .buttonStyle(.plain)
-    }
-
-    private var activeNodes: [Node] {
-        domain.allNodes
-            .filter { $0.status == .active }
-            .sorted { $0.updatedAt > $1.updatedAt }
-    }
-
-    private var latestActiveNode: Node? {
-        activeNodes.first
+        .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 14))
     }
 }
 
-struct FlatProjectCard: View {
+// MARK: - Pinned Project Card
+
+private struct HomePinnedCard: View {
     let project: Project
-    
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
+        HStack(spacing: 14) {
+            Image(systemName: "folder.fill")
+                .font(.system(size: 16, weight: .light))
+                .foregroundStyle(SymphoTheme.secondaryText)
+                .frame(width: 32, height: 32)
+                .glassEffect(.regular, in: .circle)
+
+            VStack(alignment: .leading, spacing: 2) {
                 Text(project.title)
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(SymphoTheme.primaryText)
-                
-                Spacer()
-                
-                Image(systemName: "arrow.right")
-                    .font(.caption)
-                    .foregroundColor(SymphoTheme.secondaryText)
-            }
-            
-            if !project.desc.isEmpty {
-                Text(project.desc)
-                    .font(.system(size: 11))
-                    .foregroundColor(SymphoTheme.secondaryText)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(SymphoTheme.primaryText)
                     .lineLimit(1)
+
+                if !project.desc.isEmpty {
+                    Text(project.desc)
+                        .font(.system(size: 12))
+                        .foregroundStyle(SymphoTheme.secondaryText)
+                        .lineLimit(1)
+                }
             }
-            
-            HStack(spacing: 8) {
-                Text("\(project.nodes.filter { !$0.isDeletedLocally }.count) nodes")
-                Text("•")
-                Text("\(project.resources.filter { !$0.isDeletedLocally }.count) materials")
+
+            Spacer(minLength: 0)
+
+            let activeCount = project.nodes.filter { !$0.isDeletedLocally && $0.status == .active }.count
+            let totalCount  = project.nodes.filter { !$0.isDeletedLocally }.count
+            if totalCount > 0 {
+                Text("\(activeCount)/\(totalCount)")
+                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                    .foregroundStyle(SymphoTheme.tertiaryText)
             }
-            .font(.system(size: 10))
-            .foregroundColor(SymphoTheme.secondaryText)
+
+            Image(systemName: "chevron.right")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(SymphoTheme.tertiaryText)
         }
-        .padding(12)
-        .background(SymphoTheme.elevatedCanvas.opacity(0.50))
-        .cornerRadius(SymphoTheme.cornerRadius)
-        .overlay(
-            RoundedRectangle(cornerRadius: SymphoTheme.cornerRadius)
-                .stroke(SymphoTheme.dividerColor, lineWidth: 1)
-        )
+        .padding(.horizontal, 18)
+        .padding(.vertical, 14)
+        .glassEffect(.regular, in: .rect(cornerRadius: 14))
     }
+}
+
+// MARK: - Domain Card with Progress Ring
+
+private struct HomeDomainCard: View {
+    let domain: Domain
+    let onOpen: () -> Void
+
+    var body: some View {
+        Button(action: onOpen) {
+            VStack(alignment: .leading, spacing: 0) {
+
+                // Progress ring with domain icon inside
+                ZStack {
+                    DomainProgressRing(progress: progress)
+
+                    Image(systemName: DomainIcon.validated(domain.iconName))
+                        .font(.system(size: 15, weight: .light))
+                        .foregroundStyle(SymphoTheme.primaryText)
+                }
+                .padding(.bottom, 16)
+
+                Spacer(minLength: 0)
+
+                // Title
+                Text(domain.title)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(SymphoTheme.primaryText)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(minHeight: 110)
+            .padding(20)
+            .contentShape(.rect(cornerRadius: 18))
+        }
+        .buttonStyle(.plain)
+        .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 18))
+    }
+
+    private var progress: Double {
+        let nodes = domain.allNodes
+        guard !nodes.isEmpty else { return 0 }
+        return Double(nodes.filter { $0.status == .mastered }.count) / Double(nodes.count)
+    }
+}
+
+// MARK: - Progress Ring
+
+private struct DomainProgressRing: View {
+    let progress: Double
+
+    var body: some View {
+        ZStack {
+            Circle()
+                .stroke(SymphoTheme.dividerColor, lineWidth: 2.5)
+
+            if progress > 0 {
+                Circle()
+                    .trim(from: 0, to: CGFloat(progress))
+                    .stroke(
+                        SymphoTheme.colorMastered,
+                        style: StrokeStyle(lineWidth: 2.5, lineCap: .round)
+                    )
+                    .rotationEffect(.degrees(-90))
+                    .animation(.easeOut(duration: 0.5), value: progress)
+            }
+        }
+        .frame(width: 40, height: 40)
+    }
+}
+
+#Preview {
+    DashboardView()
 }

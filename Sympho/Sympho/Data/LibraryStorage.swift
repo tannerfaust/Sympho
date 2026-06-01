@@ -37,6 +37,32 @@ enum LibraryStorage {
         workspaceURL?.lastPathComponent
     }
 
+    static var repositoryInfo: LibraryRepositoryInfo? {
+        guard let workspaceURL else { return nil }
+
+        return withWorkspaceAccess {
+            let gitFolder = workspaceURL.appendingPathComponent(".git", isDirectory: true)
+            let headURL = gitFolder.appendingPathComponent("HEAD")
+            guard let head = try? String(contentsOf: headURL, encoding: .utf8)
+                .trimmingCharacters(in: .whitespacesAndNewlines) else {
+                return nil
+            }
+
+            let branchPrefix = "ref: refs/heads/"
+            let branch = head.hasPrefix(branchPrefix)
+                ? String(head.dropFirst(branchPrefix.count))
+                : String(head.prefix(10))
+
+            let configURL = gitFolder.appendingPathComponent("config")
+            let config = (try? String(contentsOf: configURL, encoding: .utf8)) ?? ""
+
+            return LibraryRepositoryInfo(
+                branch: branch,
+                remoteURL: originRemote(in: config)
+            )
+        }
+    }
+
     static func setWorkspace(_ url: URL) throws {
         #if os(macOS)
         let hasAccess = url.startAccessingSecurityScopedResource()
@@ -59,7 +85,7 @@ enum LibraryStorage {
         UserDefaults.standard.removeObject(forKey: bookmarkKey)
     }
 
-    static func importFile(from sourceURL: URL, entryID: UUID) throws -> ImportedLibraryFile {
+    static func importFile(from sourceURL: URL, entryID: UUID, entryTitle: String) throws -> ImportedLibraryFile {
         let destinationRoot: URL
         let storageKind: String
 
@@ -80,7 +106,7 @@ enum LibraryStorage {
 
         let entryFolder = destinationRoot
             .appendingPathComponent("Entries", isDirectory: true)
-            .appendingPathComponent(entryID.uuidString, isDirectory: true)
+            .appendingPathComponent(entryFolderName(title: entryTitle, id: entryID), isDirectory: true)
         try FileManager.default.createDirectory(at: entryFolder, withIntermediateDirectories: true)
 
         let destinationURL = uniqueDestination(for: sourceURL.lastPathComponent, in: entryFolder)
@@ -104,6 +130,58 @@ enum LibraryStorage {
             storageKind: storageKind,
             contentType: UTType(filenameExtension: sourceURL.pathExtension)?.identifier ?? UTType.data.identifier
         )
+    }
+
+    static func saveMarkdownNote(_ markdown: String, entryID: UUID, entryTitle: String) throws -> ImportedLibraryFile {
+        let destinationRoot: URL
+        let storageKind: String
+
+        if let workspaceURL {
+            destinationRoot = workspaceURL
+            storageKind = "workspace"
+        } else {
+            destinationRoot = try internalLibraryRoot()
+            storageKind = "internal"
+        }
+
+        let hasRootAccess = destinationRoot.startAccessingSecurityScopedResource()
+        defer {
+            if hasRootAccess {
+                destinationRoot.stopAccessingSecurityScopedResource()
+            }
+        }
+
+        let entryFolder = destinationRoot
+            .appendingPathComponent("Entries", isDirectory: true)
+            .appendingPathComponent(entryFolderName(title: entryTitle, id: entryID), isDirectory: true)
+        try FileManager.default.createDirectory(at: entryFolder, withIntermediateDirectories: true)
+
+        let filename = "\(sanitizedFilename(entryTitle)).md"
+        let destinationURL = uniqueDestination(for: filename, in: entryFolder)
+        try markdown.write(to: destinationURL, atomically: true, encoding: .utf8)
+
+        return ImportedLibraryFile(
+            displayName: destinationURL.lastPathComponent,
+            storedPath: relativePath(for: destinationURL, from: destinationRoot),
+            storageKind: storageKind,
+            contentType: "net.daringfireball.markdown"
+        )
+    }
+
+    static func updateMarkdownNote(_ markdown: String, attachment: LibraryAttachment) throws {
+        guard let url = resolvedURL(for: attachment) else {
+            throw LibraryStorageError.missingFile
+        }
+
+        let workspace = attachment.storageKind == "workspace" ? workspaceURL : nil
+        let hasAccess = workspace?.startAccessingSecurityScopedResource() == true
+        defer {
+            if hasAccess {
+                workspace?.stopAccessingSecurityScopedResource()
+            }
+        }
+
+        try markdown.write(to: url, atomically: true, encoding: .utf8)
     }
 
     static func resolvedURL(for attachment: LibraryAttachment) -> URL? {
@@ -179,6 +257,55 @@ enum LibraryStorage {
 
         return folder.appendingPathComponent("\(UUID().uuidString)_\(filename)")
     }
+
+    private static func relativePath(for url: URL, from root: URL) -> String {
+        url.path.replacingOccurrences(of: root.path + "/", with: "")
+    }
+
+    private static func sanitizedFilename(_ title: String) -> String {
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: " -_"))
+        let cleaned = title.unicodeScalars
+            .map { allowed.contains($0) ? Character(String($0)) : "-" }
+        let name = String(cleaned).trimmingCharacters(in: .whitespacesAndNewlines)
+        return name.isEmpty ? "Untitled Note" : name
+    }
+
+    private static func entryFolderName(title: String, id: UUID) -> String {
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: " -_"))
+        let cleaned = title.unicodeScalars
+            .map { allowed.contains($0) ? Character(String($0)) : "-" }
+        let normalized = String(cleaned)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "  ", with: " ")
+        let name = normalized.isEmpty ? "Untitled Entry" : normalized
+        return "\(name) -- \(id.uuidString.prefix(8))"
+    }
+
+    private static func originRemote(in config: String) -> String? {
+        var isOriginSection = false
+
+        for line in config.components(separatedBy: .newlines) {
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.hasPrefix("[") {
+                isOriginSection = trimmed == "[remote \"origin\"]"
+            } else if isOriginSection, trimmed.hasPrefix("url = ") {
+                return String(trimmed.dropFirst("url = ".count))
+            }
+        }
+
+        return nil
+    }
+}
+
+enum LibraryStorageError: LocalizedError {
+    case missingFile
+
+    var errorDescription: String? {
+        switch self {
+        case .missingFile:
+            return "The saved file could not be found. Choose the correct Library folder in Settings and try again."
+        }
+    }
 }
 
 struct ImportedLibraryFile {
@@ -186,4 +313,9 @@ struct ImportedLibraryFile {
     let storedPath: String
     let storageKind: String
     let contentType: String
+}
+
+struct LibraryRepositoryInfo {
+    let branch: String
+    let remoteURL: String?
 }

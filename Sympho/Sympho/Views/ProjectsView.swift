@@ -126,6 +126,7 @@ private struct ProjectCard: View {
     let onOpen: () -> Void
 
     @State private var isHovering = false
+    @State private var showsEditSheet = false
 
     var body: some View {
         Button(action: onOpen) {
@@ -185,11 +186,26 @@ private struct ProjectCard: View {
         .buttonStyle(.plain)
         .onHover { isHovering = $0 }
         .contextMenu {
+            Button("Edit", systemImage: "pencil") { showsEditSheet = true }
+            Button("Delete", role: .destructive) { softDeleteProject() }
+            Divider()
             Button(project.isPinned ? "Unpin Project" : "Pin Project") {
                 project.isPinned.toggle()
                 markProjectChanged()
             }
         }
+        .sheet(isPresented: $showsEditSheet) {
+            SymphoItemEditSheet(subject: .project(project)) {
+                showsEditSheet = false
+            }
+        }
+    }
+
+    private func softDeleteProject() {
+        project.isDeletedLocally = true
+        project.isSynced = false
+        project.updatedAt = Date()
+        try? modelContext.save()
     }
 
     private var activeNodes: [Node] {
@@ -316,6 +332,7 @@ struct ProjectDetailView: View {
     @State private var showsCreateNode = false
     @State private var showsCreateResource = false
     @State private var showsCompactTitle = false
+    @State private var showsEditProjectSheet = false
 
     var body: some View {
         ScrollView {
@@ -337,6 +354,11 @@ struct ProjectDetailView: View {
         }
         .sheet(item: $selectedNode) { node in
             NodeDetailSheet(node: node)
+        }
+        .sheet(isPresented: $showsEditProjectSheet) {
+            SymphoItemEditSheet(subject: .project(project)) {
+                showsEditProjectSheet = false
+            }
         }
     }
 
@@ -383,6 +405,11 @@ struct ProjectDetailView: View {
                 }
                 .pickerStyle(.menu)
                 .labelsHidden()
+
+                SymphoOverflowMenu(
+                    onEdit: { showsEditProjectSheet = true },
+                    onDelete: { deleteProject() }
+                )
             }
 
             HStack(spacing: 18) {
@@ -474,6 +501,14 @@ struct ProjectDetailView: View {
         project.isSynced = false
         try? modelContext.save()
     }
+
+    private func deleteProject() {
+        project.isDeletedLocally = true
+        project.isSynced = false
+        project.updatedAt = Date()
+        try? modelContext.save()
+        onBack()
+    }
 }
 
 private struct ProjectNodeRow: View {
@@ -481,6 +516,8 @@ private struct ProjectNodeRow: View {
 
     let node: Node
     let onOpen: () -> Void
+
+    @State private var showsEditSheet = false
 
     var body: some View {
         HStack(spacing: 12) {
@@ -519,12 +556,28 @@ private struct ProjectNodeRow: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 11)
+        .symphoCardContextMenu(
+            edit: { showsEditSheet = true },
+            delete: { softDeleteNode() }
+        )
+        .sheet(isPresented: $showsEditSheet) {
+            SymphoItemEditSheet(subject: .node(node)) {
+                showsEditSheet = false
+            }
+        }
     }
 
     private func toggleCompletion() {
         node.status = node.status == .mastered ? .backlog : .mastered
         node.updatedAt = Date()
         node.isSynced = false
+        try? modelContext.save()
+    }
+
+    private func softDeleteNode() {
+        node.isDeletedLocally = true
+        node.isSynced = false
+        node.updatedAt = Date()
         try? modelContext.save()
     }
 }

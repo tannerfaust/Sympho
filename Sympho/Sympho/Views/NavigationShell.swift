@@ -13,6 +13,8 @@ enum NavSection: String, CaseIterable, Identifiable {
     case inbox
     case domains
     case projects
+    case readingList
+    case planner
     case library
 
     var id: String { rawValue }
@@ -23,6 +25,8 @@ enum NavSection: String, CaseIterable, Identifiable {
         case .inbox: return "Inbox"
         case .domains: return "Domains"
         case .projects: return "Projects"
+        case .readingList: return "Reading List"
+        case .planner: return "Planner"
         case .library: return "Library"
         }
     }
@@ -33,6 +37,8 @@ enum NavSection: String, CaseIterable, Identifiable {
         case .inbox: return "Unsorted captures"
         case .domains: return "Fields of study"
         case .projects: return "Output workspaces"
+        case .readingList: return "Books you are reading"
+        case .planner: return "Study & training rhythm"
         case .library: return "Reference material"
         }
     }
@@ -43,6 +49,8 @@ enum NavSection: String, CaseIterable, Identifiable {
         case .inbox: return "tray"
         case .domains: return "books.vertical"
         case .projects: return "folder"
+        case .readingList: return "book.closed.fill"
+        case .planner: return "calendar.badge.clock"
         case .library: return "books.vertical"
         }
     }
@@ -53,7 +61,9 @@ enum NavSection: String, CaseIterable, Identifiable {
         case .inbox: return "2"
         case .domains: return "3"
         case .projects: return "4"
-        case .library: return "5"
+        case .readingList: return "5"
+        case .planner: return "6"
+        case .library: return "7"
         }
     }
 }
@@ -64,6 +74,7 @@ struct NavigationShell: View {
     @State private var selectedDomain: Domain?
     @State private var isDomainsExpanded = false
     @State private var showQuickCapture = false
+    @State private var isShowingSettings = false
 
     @Query(
         filter: #Predicate<Domain> { !$0.isArchived && !$0.isDeletedLocally },
@@ -121,6 +132,7 @@ struct NavigationShell: View {
                                 withAnimation(.snappy(duration: 0.18)) {
                                     selectedSection = section
                                     selectedDomain = nil
+                                    isShowingSettings = false
                                 }
                             }
                             .keyboardShortcut(section.shortcut, modifiers: [.command])
@@ -149,6 +161,7 @@ struct NavigationShell: View {
                         selectedSection = .domains
                         selectedDomain = nil
                         isDomainsExpanded = true
+                        isShowingSettings = false
                     }
                 },
                 onToggle: {
@@ -228,6 +241,10 @@ struct NavigationShell: View {
             .help("Quick capture")
 
             Button {
+                withAnimation(.snappy(duration: 0.18)) {
+                    isShowingSettings = true
+                    selectedDomain = nil
+                }
             } label: {
                 HStack(spacing: 8) {
                     Image(systemName: "gearshape")
@@ -244,19 +261,11 @@ struct NavigationShell: View {
     }
 
     private var detailContainer: some View {
-        VStack(spacing: 0) {
-            if selectedSection != .domains && selectedSection != .inbox && selectedSection != .projects && selectedSection != .library {
-                DetailTopBar(section: selectedSection) {
-                    showQuickCapture.toggle()
-                }
-            }
-
-            detailView
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .appContentBackground()
-        }
-        .frame(minWidth: 760, minHeight: 560)
-        .background(SymphoTheme.primaryCanvas)
+        detailView
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .appContentBackground()
+            .frame(minWidth: 760, minHeight: 560)
+            .background(SymphoTheme.primaryCanvas)
     }
 
     #endif
@@ -291,6 +300,14 @@ struct NavigationShell: View {
                 .tabItem { Label(NavSection.projects.title, systemImage: NavSection.projects.iconName) }
                 .tag(NavSection.projects)
 
+            NavigationStack { ReadingListView() }
+                .tabItem { Label(NavSection.readingList.title, systemImage: NavSection.readingList.iconName) }
+                .tag(NavSection.readingList)
+
+            NavigationStack { PlannerView() }
+                .tabItem { Label(NavSection.planner.title, systemImage: NavSection.planner.iconName) }
+                .tag(NavSection.planner)
+
             NavigationStack { LibraryView() }
                 .tabItem { Label(NavSection.library.title, systemImage: NavSection.library.iconName) }
                 .tag(NavSection.library)
@@ -309,17 +326,25 @@ struct NavigationShell: View {
 
     @ViewBuilder
     var detailView: some View {
-        switch selectedSection {
-        case .dashboard:
-            DashboardView(onOpenDomain: openDomain)
-        case .inbox:
-            InboxView()
-        case .domains:
-            DomainsView(selectedDomain: $selectedDomain)
-        case .projects:
-            ProjectsView()
-        case .library:
-            LibraryView()
+        if isShowingSettings {
+            SettingsView()
+        } else {
+            switch selectedSection {
+            case .dashboard:
+                DashboardView(onOpenDomain: openDomain)
+            case .inbox:
+                InboxView()
+            case .domains:
+                DomainsView(selectedDomain: $selectedDomain)
+            case .projects:
+                ProjectsView()
+            case .readingList:
+                ReadingListView()
+            case .planner:
+                PlannerView()
+            case .library:
+                LibraryView()
+            }
         }
     }
 
@@ -327,6 +352,7 @@ struct NavigationShell: View {
         withAnimation(.snappy(duration: 0.18)) {
             selectedSection = .domains
             selectedDomain = domain
+            isShowingSettings = false
             #if os(macOS)
             isDomainsExpanded = true
             #endif
@@ -347,41 +373,6 @@ struct NavigationShell: View {
 }
 
 #if os(macOS)
-private struct DetailTopBar: View {
-    let section: NavSection
-    let onCapture: () -> Void
-
-    var body: some View {
-        HStack(spacing: 12) {
-            VStack(alignment: .leading, spacing: 1) {
-                Text(section.title)
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(SymphoTheme.primaryText)
-
-                Text(section.subtitle)
-                    .font(.system(size: 11))
-                    .foregroundStyle(SymphoTheme.secondaryText)
-            }
-
-            Spacer()
-
-            Button {
-                onCapture()
-            } label: {
-                Label("Capture", systemImage: "plus")
-            }
-            .buttonStyle(SymphoSecondaryButtonStyle())
-            .keyboardShortcut("k", modifiers: [.command])
-        }
-        .padding(.horizontal, 18)
-        .padding(.vertical, 10)
-        .background(.bar)
-        .overlay(alignment: .bottom) {
-            MinimalDivider()
-        }
-    }
-}
-
 private struct SidebarRow: View {
     let section: NavSection
     let isSelected: Bool

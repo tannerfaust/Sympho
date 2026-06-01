@@ -4,7 +4,7 @@
 
 **The "Deconstruction" Job:** When I decide to tackle a massive, intimidating subject, I want to see the underlying logical sequence of prerequisites, so I don't feel overwhelmed or stupid by starting in the wrong place.
 
-**The "Triage" Job:** When my backlog of "things to learn" hits 50+ items, I want to map them against my important goals at the moment, so I spend my limited weekend hours studying what actually moves the needle.
+**The "Triag Job:** When my backlog of "things to learn" hits 50+ items, I want to map them against my important goals at the moment, so I spend my limited weekend hours studying what actually moves the needle. sssds
 
 **The "Resource Convergence" Job**: When I finally sit down for a dedicated, two-hour study block, I want all my scattered PDFs, specific documentation links, and video tutorials attached directly to the exact topic node I'm working on, so I spend 100% of my time actually absorbing the material instead of hunting through chaotic bookmarks and browser tabs.
 

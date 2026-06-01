@@ -10,11 +10,13 @@ import SwiftData
 import UniformTypeIdentifiers
 #if os(macOS)
 import AppKit
+import QuickLookThumbnailing
 #endif
 
 private enum LibraryFilterScope: String, CaseIterable, Identifiable {
     case domains
     case projects
+    case readingList
 
     var id: String { rawValue }
 
@@ -22,8 +24,20 @@ private enum LibraryFilterScope: String, CaseIterable, Identifiable {
         switch self {
         case .domains: return "Domains"
         case .projects: return "Projects"
+        case .readingList: return "Reading List"
         }
     }
+}
+
+private struct FilterUpdateTrigger: Equatable {
+    let searchText: String
+    let filterScope: LibraryFilterScope
+    let selectedDomainID: UUID?
+    let selectedProjectID: UUID?
+    let selectedTagID: UUID?
+    let entriesCount: Int
+    let nodesCount: Int
+    let projectsCount: Int
 }
 
 struct LibraryView: View {
@@ -39,15 +53,28 @@ struct LibraryView: View {
     @Query(filter: #Predicate<Project> { !$0.isDeletedLocally }, sort: \Project.title)
     private var projects: [Project]
 
+    @Query(filter: #Predicate<Node> { !$0.isDeletedLocally })
+    private var allNodes: [Node]
+
+    @Query(filter: #Predicate<ReadingListItem> { !$0.isDeletedLocally })
+    private var readingListItems: [ReadingListItem]
+
+    @Query(sort: \LibraryTag.name)
+    private var libraryTags: [LibraryTag]
+
+    @Environment(\.modelContext) private var modelContext
+
     @State private var selectedEntry: Resource?
     @State private var searchText = ""
     @State private var filterScope: LibraryFilterScope = .domains
     @State private var selectedDomain: Domain?
     @State private var selectedProject: Project?
+    @State private var selectedReadingTag: LibraryTag?
     @State private var showsCreateEntry = false
-    @State private var showsWorkspacePicker = false
     @State private var showsCompactTitle = false
-    @State private var workspaceName = LibraryStorage.workspaceName
+    @FocusState private var isSearchFocused: Bool
+
+    @State private var cachedFilteredEntries: [Resource] = []
 
     var body: some View {
         if let selectedEntry {
@@ -59,18 +86,54 @@ struct LibraryView: View {
         }
     }
 
+    private func createNewBlankNote() {
+        let newEntry = Resource(
+            title: "Untitled Note",
+            bodyText: "",
+            resourceType: .note,
+            domain: filterScope == .domains ? selectedDomain : nil
+        )
+        if filterScope == .projects, let selectedProject {
+            newEntry.projects.append(selectedProject)
+            newEntry.domain = selectedProject.domain
+        }
+        modelContext.insert(newEntry)
+        
+        // Immediately save the note as a real markdown file in the workspace
+        if let imported = try? LibraryStorage.saveMarkdownNote("", entryID: newEntry.id, entryTitle: newEntry.title) {
+            let attachment = LibraryAttachment(
+                displayName: imported.displayName,
+                storedPath: imported.storedPath,
+                storageKind: imported.storageKind,
+                contentType: imported.contentType,
+                resource: newEntry
+            )
+            modelContext.insert(attachment)
+            newEntry.attachments.append(attachment)
+        }
+        
+        try? modelContext.save()
+        selectedEntry = newEntry
+    }
+
     private var overview: some View {
         ScrollView {
-            LazyVStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 0) {
                 header
                 searchBar
                 filterBar
 
-                if filteredEntries.isEmpty {
+                if filterScope == .readingList {
+                    LibraryReadingListSection(
+                        searchText: searchText,
+                        selectedDomain: selectedDomain,
+                        selectedTag: selectedReadingTag
+                    )
+                } else if cachedFilteredEntries.isEmpty {
                     emptyState
                 } else {
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 290), spacing: 14)], spacing: 14) {
-                        ForEach(filteredEntries) { entry in
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 242), spacing: 12)], spacing: 12) {
+                        ForEach(cachedFilteredEntries) { entry in
                             LibraryEntryCard(entry: entry) {
                                 selectedEntry = entry
                             }
@@ -83,17 +146,34 @@ struct LibraryView: View {
         }
         .libraryScrollChrome(title: "Library", showsCompactTitle: $showsCompactTitle)
         .sheet(isPresented: $showsCreateEntry) {
-            CreateLibraryEntrySheet(domains: domains)
+            CreateLibraryEntrySheet(
+                domains: domains,
+                initialDomain: filterScope == .domains ? selectedDomain : nil,
+                initialProject: filterScope == .projects ? selectedProject : nil
+            )
         }
-        .fileImporter(
-            isPresented: $showsWorkspacePicker,
-            allowedContentTypes: [.folder],
-            allowsMultipleSelection: false
-        ) { result in
-            guard case .success(let urls) = result, let folder = urls.first else { return }
-            if (try? LibraryStorage.setWorkspace(folder)) != nil {
-                workspaceName = LibraryStorage.workspaceName
-            }
+        .task(id: FilterUpdateTrigger(
+            searchText: searchText,
+            filterScope: filterScope,
+            selectedDomainID: selectedDomain?.id,
+            selectedProjectID: selectedProject?.id,
+            selectedTagID: selectedReadingTag?.id,
+            entriesCount: entries.count,
+            nodesCount: allNodes.count,
+            projectsCount: projects.count
+        )) {
+            updateFilteredEntries()
+        }
+    }
+
+    private var libraryHeaderSubtitle: String {
+        switch filterScope {
+        case .readingList:
+            let count = readingListItems.count
+            return count == 0 ? "No books" : "\(count) book\(count == 1 ? "" : "s")"
+        case .domains, .projects:
+            let count = entries.count
+            return count == 0 ? "No saved entries" : "\(count) saved entr\(count == 1 ? "y" : "ies")"
         }
     }
 
@@ -103,45 +183,11 @@ struct LibraryView: View {
                 Text("Library")
                     .editorialHeader()
 
-                Text(entries.isEmpty ? "No saved entries" : "\(entries.count) saved entr\(entries.count == 1 ? "y" : "ies")")
+                Text(libraryHeaderSubtitle)
                     .metadataSans()
             }
 
             Spacer()
-
-            Menu {
-                Button {
-                    showsWorkspacePicker = true
-                } label: {
-                    Label("Choose Library Folder", systemImage: "folder")
-                }
-
-                if workspaceName != nil {
-                    Button {
-                        LibraryStorage.clearWorkspace()
-                        workspaceName = nil
-                    } label: {
-                        Label("Use Internal Storage", systemImage: "internaldrive")
-                    }
-                }
-            } label: {
-                Image(systemName: workspaceName == nil ? "internaldrive" : "folder")
-                    .font(.system(size: 14, weight: .medium))
-                    .frame(width: 28, height: 28)
-            }
-            .menuStyle(.borderlessButton)
-            .help(workspaceName.map { "Library Folder: \($0)" } ?? "Library Storage")
-
-            Button {
-                showsCreateEntry = true
-            } label: {
-                Image(systemName: "plus")
-                    .font(.system(size: 17, weight: .semibold))
-                    .frame(width: 34, height: 34)
-            }
-            .buttonStyle(.glass)
-            .buttonBorderShape(.circle)
-            .help("New Library Entry")
         }
         .padding(.horizontal, SymphoTheme.outerPadding)
         .padding(.top, 18)
@@ -157,6 +203,7 @@ struct LibraryView: View {
             TextField("Search library", text: $searchText)
                 .textFieldStyle(.plain)
                 .font(.system(size: 13))
+                .focused($isSearchFocused)
 
             if !searchText.isEmpty {
                 Button {
@@ -170,7 +217,7 @@ struct LibraryView: View {
         }
         .padding(.horizontal, 11)
         .frame(height: 38)
-        .librarySurface()
+        .modifier(LibrarySearchSurface(isFocused: isSearchFocused))
         .padding(.horizontal, SymphoTheme.outerPadding)
         .padding(.bottom, 16)
     }
@@ -182,6 +229,9 @@ struct LibraryView: View {
                     Button {
                         withAnimation(.easeInOut(duration: 0.15)) {
                             filterScope = scope
+                            if scope != .readingList {
+                                selectedReadingTag = nil
+                            }
                         }
                     } label: {
                         Text(scope.title)
@@ -202,10 +252,41 @@ struct LibraryView: View {
             .padding(2)
             .glassEffect(.regular.interactive(), in: .capsule)
 
-            if filterScope == .domains {
-                domainFilters
-            } else {
-                projectFilters
+            HStack(alignment: .center, spacing: 8) {
+                switch filterScope {
+                case .domains:
+                    domainFilters
+                case .projects:
+                    projectFilters
+                case .readingList:
+                    readingListFilters
+                }
+
+                if filterScope != .readingList {
+                    Menu {
+                        Button {
+                            showsCreateEntry = true
+                        } label: {
+                            Label("New Reference", systemImage: "paperclip")
+                        }
+
+                        Button {
+                            createNewBlankNote()
+                        } label: {
+                            Label("New Markdown Note", systemImage: "note.text.badge.plus")
+                        }
+                    } label: {
+                        Image(systemName: "plus")
+                            .font(.system(size: 12, weight: .semibold))
+                            .frame(width: 26, height: 26)
+                    }
+                    .buttonStyle(.glass)
+                    .buttonBorderShape(.circle)
+                    .menuStyle(.borderlessButton)
+                    .menuIndicator(.hidden)
+                    .fixedSize()
+                    .help("New Library Entry")
+                }
             }
         }
         .padding(.horizontal, SymphoTheme.outerPadding)
@@ -230,6 +311,46 @@ struct LibraryView: View {
                         isSelected: selectedDomain?.id == domain.id
                     ) {
                         selectedDomain = domain
+                    }
+                }
+            }
+            .padding(.vertical, 2)
+        }
+    }
+
+    private var readingListFilters: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                filterPill(
+                    title: "All Books",
+                    iconName: "book.closed",
+                    isSelected: selectedDomain == nil && selectedReadingTag == nil
+                ) {
+                    selectedDomain = nil
+                    selectedReadingTag = nil
+                }
+
+                ForEach(domains) { domain in
+                    filterPill(
+                        title: domain.title,
+                        iconName: DomainIcon.validated(domain.iconName),
+                        isSelected: selectedDomain?.id == domain.id && selectedReadingTag == nil
+                    ) {
+                        selectedDomain = domain
+                        selectedReadingTag = nil
+                    }
+                }
+
+                if !libraryTags.isEmpty {
+                    ForEach(libraryTags) { tag in
+                        filterPill(
+                            title: tag.name,
+                            iconName: "tag",
+                            isSelected: selectedReadingTag?.id == tag.id
+                        ) {
+                            selectedReadingTag = tag
+                            selectedDomain = nil
+                        }
                     }
                 }
             }
@@ -281,10 +402,35 @@ struct LibraryView: View {
         .buttonStyle(.plain)
     }
 
-    private var filteredEntries: [Resource] {
+    private func updateFilteredEntries() {
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-
-        return entries.filter {
+        
+        let selectedDomainID = selectedDomain?.id
+        let selectedProjectID = selectedProject?.id
+        
+        // Build lookup maps to avoid traversing nested SwiftData relationships in the filter loop
+        let projectDomainMap = Dictionary(uniqueKeysWithValues: projects.compactMap { project -> (UUID, UUID)? in
+            if let domainID = project.domain?.id {
+                return (project.id, domainID)
+            }
+            return nil
+        })
+        
+        let nodeDomainMap = Dictionary(uniqueKeysWithValues: allNodes.compactMap { node -> (UUID, UUID)? in
+            if let domainID = node.module?.track?.domain?.id ?? node.module?.domain?.id {
+                return (node.id, domainID)
+            }
+            return nil
+        })
+        
+        let nodeProjectMap = Dictionary(uniqueKeysWithValues: allNodes.compactMap { node -> (UUID, UUID)? in
+            if let projectID = node.project?.id {
+                return (node.id, projectID)
+            }
+            return nil
+        })
+        
+        cachedFilteredEntries = entries.filter {
             let matchesSearch = query.isEmpty ||
                 $0.title.lowercased().contains(query) ||
                 $0.bodyText.lowercased().contains(query) ||
@@ -295,17 +441,18 @@ struct LibraryView: View {
 
             switch filterScope {
             case .domains:
-                guard let selectedDomain else { return true }
-                return $0.domain?.id == selectedDomain.id ||
-                    $0.nodes.contains { node in
-                        node.module?.track?.domain?.id == selectedDomain.id ||
-                        node.module?.domain?.id == selectedDomain.id
-                    } ||
-                    $0.projects.contains { $0.domain?.id == selectedDomain.id }
+                guard let selectedDomainID else { return true }
+                if $0.domain?.id == selectedDomainID { return true }
+                if $0.projects.contains(where: { projectDomainMap[$0.id] == selectedDomainID }) { return true }
+                if $0.nodes.contains(where: { nodeDomainMap[$0.id] == selectedDomainID }) { return true }
+                return false
             case .projects:
-                guard let selectedProject else { return true }
-                return $0.projects.contains { $0.id == selectedProject.id } ||
-                    $0.nodes.contains { $0.project?.id == selectedProject.id }
+                guard let selectedProjectID else { return true }
+                if $0.projects.contains(where: { $0.id == selectedProjectID }) { return true }
+                if $0.nodes.contains(where: { nodeProjectMap[$0.id] == selectedProjectID }) { return true }
+                return false
+            case .readingList:
+                return false
             }
         }
     }
@@ -351,34 +498,20 @@ private struct LibraryEntryCard: View {
 
     var body: some View {
         Button(action: onOpen) {
-            VStack(alignment: .leading, spacing: 14) {
-                HStack {
-                    Image(systemName: iconName)
-                        .font(.system(size: 18, weight: .medium))
-                        .foregroundStyle(SymphoTheme.primaryText)
-                        .frame(width: 42, height: 42)
-                        .glassEffect(.regular, in: .rect(cornerRadius: 13))
-
-                    Spacer()
-
-                    if attachmentCount > 0 {
-                        Label("\(attachmentCount)", systemImage: "paperclip")
-                            .font(.system(size: 10, weight: .medium))
-                            .foregroundStyle(SymphoTheme.tertiaryText)
-                    }
-                }
+            VStack(alignment: .leading, spacing: 9) {
+                preview
 
                 VStack(alignment: .leading, spacing: 5) {
                     Text(entry.title)
-                        .font(.system(size: 15, weight: .semibold))
+                        .font(.system(size: 14, weight: .semibold))
                         .foregroundStyle(SymphoTheme.primaryText)
                         .lineLimit(1)
 
                     Text(summaryText)
-                        .font(.system(size: 12))
+                        .font(.system(size: 11))
                         .foregroundStyle(SymphoTheme.secondaryText)
-                        .lineLimit(3)
-                        .frame(minHeight: 44, alignment: .topLeading)
+                        .lineLimit(2)
+                        .frame(height: 28, alignment: .topLeading)
                 }
 
                 HStack(spacing: 8) {
@@ -388,26 +521,46 @@ private struct LibraryEntryCard: View {
                     }
 
                     Spacer()
-                    Text(entry.updatedAt, style: .relative)
+
+                    if attachmentCount > 1 {
+                        Label("\(attachmentCount)", systemImage: "paperclip")
+                    }
                 }
                 .font(.system(size: 10))
                 .foregroundStyle(SymphoTheme.tertiaryText)
+
+                if !entry.tags.isEmpty {
+                    HStack(spacing: 4) {
+                        ForEach(entry.tags.prefix(3)) { tag in
+                            Text(tag.name)
+                                .font(.system(size: 9, weight: .medium))
+                                .foregroundStyle(SymphoTheme.tertiaryText)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 3)
+                                .background(SymphoTheme.elevatedCanvas.opacity(0.65), in: .capsule)
+                        }
+                    }
+                }
             }
-            .padding(15)
-            .frame(minHeight: 175, alignment: .topLeading)
-            .background {
-                RoundedRectangle(cornerRadius: 17, style: .continuous)
-                    .fill(SymphoTheme.elevatedCanvas.opacity(isHovering ? 0.86 : 0.62))
-            }
-            .overlay {
-                RoundedRectangle(cornerRadius: 17, style: .continuous)
-                    .stroke(isHovering ? SymphoTheme.primaryText.opacity(0.16) : SymphoTheme.dividerColor, lineWidth: 1)
-            }
+            .padding(9)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
         .buttonStyle(.plain)
+        .frame(height: 228)
+        .frame(maxWidth: .infinity)
+        .background {
+            RoundedRectangle(cornerRadius: 17, style: .continuous)
+                .fill(SymphoTheme.elevatedCanvas.opacity(isHovering ? 0.86 : 0.62))
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 17, style: .continuous)
+                .stroke(isHovering ? SymphoTheme.primaryText.opacity(0.16) : SymphoTheme.dividerColor, lineWidth: 1)
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 17, style: .continuous))
         .onHover { isHovering = $0 }
         .contextMenu {
-            Button("Delete Entry", role: .destructive) {
+            Button("Edit", systemImage: "pencil", action: onOpen)
+            Button("Delete", role: .destructive) {
                 entry.isDeletedLocally = true
                 entry.updatedAt = Date()
                 entry.isSynced = false
@@ -416,8 +569,85 @@ private struct LibraryEntryCard: View {
         }
     }
 
+    @ViewBuilder
+    private var preview: some View {
+        if let thumbnailURL = entry.youtubeThumbnailURL {
+            LibraryRemoteThumbnail(url: thumbnailURL, fallbackIcon: "play.rectangle")
+                .overlay(alignment: .center) {
+                    Image(systemName: "play.fill")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .frame(width: 36, height: 36)
+                        .background(.black.opacity(0.62), in: .circle)
+                }
+                .overlay(alignment: .bottomLeading) {
+                    previewLabel("YOUTUBE", iconName: "play.rectangle")
+                }
+                .libraryCardPreview()
+        } else if let attachment = representativeAttachment {
+            LibraryAttachmentThumbnail(attachment: attachment)
+                .overlay(alignment: .bottomLeading) {
+                    previewLabel(attachment.typeLabel, iconName: attachment.iconName)
+                }
+                .libraryCardPreview()
+        } else {
+            VStack(alignment: .leading, spacing: 5) {
+                if !entry.bodyText.isEmpty {
+                    Text(entry.bodyText)
+                        .font(.system(size: 10))
+                        .foregroundStyle(SymphoTheme.secondaryText)
+                        .lineSpacing(2)
+                        .multilineTextAlignment(.leading)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                } else {
+                    VStack(spacing: 6) {
+                        Image(systemName: "note.text")
+                            .font(.system(size: 20, weight: .light))
+                            .foregroundStyle(SymphoTheme.tertiaryText)
+                        Text("Empty Note")
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(SymphoTheme.tertiaryText)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+                }
+            }
+            .padding(12)
+            .background(SymphoTheme.secondarySurface.opacity(0.55))
+            .libraryCardPreview()
+        }
+    }
+
+    private func previewLabel(_ title: String, iconName: String) -> some View {
+        Label(title, systemImage: iconName)
+            .font(.system(size: 9, weight: .semibold))
+            .foregroundStyle(.white)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 4)
+            .background(.black.opacity(0.56), in: .capsule)
+            .padding(7)
+    }
+
     private var attachmentCount: Int {
         entry.attachments.count + (entry.fileRelativePath == nil ? 0 : 1)
+    }
+
+    private var representativeAttachment: LibraryDisplayAttachment? {
+        if let attachment = entry.attachments.sorted(by: { $0.previewPriority < $1.previewPriority }).first {
+            return LibraryDisplayAttachment(
+                id: attachment.id,
+                name: attachment.displayName,
+                contentType: attachment.contentType,
+                url: LibraryStorage.resolvedURL(for: attachment)
+            )
+        }
+
+        guard let legacyURL = LibraryStorage.legacyResolvedURL(for: entry) else { return nil }
+        return LibraryDisplayAttachment(
+            id: entry.id,
+            name: legacyURL.lastPathComponent,
+            contentType: UTType(filenameExtension: legacyURL.pathExtension)?.identifier ?? UTType.data.identifier,
+            url: legacyURL
+        )
     }
 
     private var iconName: String {
@@ -428,51 +658,236 @@ private struct LibraryEntryCard: View {
 
     private var summaryText: String {
         if !entry.bodyText.isEmpty { return entry.bodyText }
-        if !entry.urlString.isEmpty { return entry.urlString }
         if attachmentCount > 0 { return "\(attachmentCount) attached file\(attachmentCount == 1 ? "" : "s")" }
+        if let url = URL(string: entry.urlString), !url.isFileURL { return entry.urlString }
         return "Saved reference entry"
+    }
+}
+
+private enum SlashCommandOption: String, CaseIterable, Identifiable {
+    case h1, h2, h3, bullet, checklist, quote, code
+    
+    var id: String { rawValue }
+    
+    var title: String {
+        switch self {
+        case .h1: return "Heading 1"
+        case .h2: return "Heading 2"
+        case .h3: return "Heading 3"
+        case .bullet: return "Bulleted List"
+        case .checklist: return "Checklist"
+        case .quote: return "Quote"
+        case .code: return "Code Block"
+        }
+    }
+    
+    var iconName: String {
+        switch self {
+        case .h1: return "h.square"
+        case .h2: return "h.square"
+        case .h3: return "h.square"
+        case .bullet: return "list.bullet"
+        case .checklist: return "checkmark.square"
+        case .quote: return "text.quote"
+        case .code: return "chevron.left.forwardslash.chevron.right"
+        }
+    }
+    
+    var markdownPrefix: String {
+        switch self {
+        case .h1: return "# "
+        case .h2: return "## "
+        case .h3: return "### "
+        case .bullet: return "- "
+        case .checklist: return "- [ ] "
+        case .quote: return "> "
+        case .code: return "```\n\n```"
+        }
     }
 }
 
 private struct LibraryEntryDetailView: View {
     @Environment(\.openURL) private var openURL
+    @Environment(\.modelContext) private var modelContext
 
     let entry: Resource
     let onBack: () -> Void
 
+    @Query(
+        filter: #Predicate<Domain> { !$0.isArchived && !$0.isDeletedLocally },
+        sort: [SortDescriptor(\Domain.sortIndex), SortDescriptor(\Domain.title)]
+    )
+    private var domains: [Domain]
+
+    @State private var title: String
+    @State private var bodyText: String
+    @State private var selectedDomain: Domain?
+    @State private var selectedTags: [LibraryTag]
+    @State private var linkedBook: ReadingListItem?
+
+    @Query(sort: \LibraryTag.name) private var allTags: [LibraryTag]
+
+    @Query(
+        filter: #Predicate<ReadingListItem> { !$0.isDeletedLocally },
+        sort: \ReadingListItem.title
+    )
+    private var readingBooks: [ReadingListItem]
+
     @State private var showsCompactTitle = false
     @State private var selectedImage: LibraryImagePreview?
+    
+    @State private var showsSlashMenu = false
+    @State private var slashMenuIndex = 0
+    @State private var editorHeight: CGFloat = 180
+    @State private var cursorRect: CGRect = .zero
+    @State private var markdownEditor = MarkdownEditorController()
+
+    init(entry: Resource, onBack: @escaping () -> Void) {
+        self.entry = entry
+        self.onBack = onBack
+        _title = State(initialValue: entry.title)
+        _selectedDomain = State(initialValue: entry.domain)
+        _selectedTags = State(initialValue: entry.tags)
+        _linkedBook = State(initialValue: entry.readingListItem)
+
+        var initialBodyText = entry.bodyText
+        if let mdAttachment = entry.attachments.first(where: { $0.isMarkdown }),
+           let url = LibraryStorage.resolvedURL(for: mdAttachment),
+           let fileContent = try? String(contentsOf: url, encoding: .utf8) {
+            initialBodyText = fileContent
+        } else if let legacyURL = LibraryStorage.legacyResolvedURL(for: entry),
+                  let fileContent = try? String(contentsOf: legacyURL, encoding: .utf8) {
+            initialBodyText = fileContent
+        }
+        _bodyText = State(initialValue: initialBodyText)
+    }
+
+    private func saveChanges() {
+        let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        
+        let titleChanged = entry.title != trimmedTitle
+        let domainChanged = entry.domain?.id != selectedDomain?.id
+        
+        if titleChanged || domainChanged {
+            entry.title = trimmedTitle
+            entry.domain = selectedDomain
+            entry.updatedAt = Date()
+            entry.isSynced = false
+        }
+        
+        var bodyChanged = false
+        if let mdAttachment = entry.attachments.first(where: { $0.isMarkdown }) {
+            if let url = LibraryStorage.resolvedURL(for: mdAttachment) {
+                let existingContent = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+                if existingContent != bodyText {
+                    try? LibraryStorage.updateMarkdownNote(bodyText, attachment: mdAttachment)
+                    bodyChanged = true
+                }
+            }
+        } else if let legacyURL = LibraryStorage.legacyResolvedURL(for: entry) {
+            let existingContent = (try? String(contentsOf: legacyURL, encoding: .utf8)) ?? ""
+            if existingContent != bodyText {
+                try? bodyText.write(to: legacyURL, atomically: true, encoding: .utf8)
+                bodyChanged = true
+            }
+        } else if entry.resourceType == .note {
+            if let imported = try? LibraryStorage.saveMarkdownNote(bodyText, entryID: entry.id, entryTitle: trimmedTitle) {
+                let attachment = LibraryAttachment(
+                    displayName: imported.displayName,
+                    storedPath: imported.storedPath,
+                    storageKind: imported.storageKind,
+                    contentType: imported.contentType,
+                    resource: entry
+                )
+                modelContext.insert(attachment)
+                entry.attachments.append(attachment)
+                bodyChanged = true
+            }
+        } else {
+            if entry.bodyText != bodyText {
+                entry.bodyText = bodyText
+                bodyChanged = true
+            }
+        }
+        
+        if bodyChanged {
+            entry.bodyText = bodyText
+            entry.updatedAt = Date()
+            entry.isSynced = false
+        }
+        
+        let tagNames = selectedTags.map(\.name).sorted()
+        let existingTagNames = entry.tags.map(\.name).sorted()
+        let tagsChanged = tagNames != existingTagNames
+        if tagsChanged {
+            var tagCache = allTags
+            LibraryTagsHelper.applyTags(names: selectedTags.map(\.name), to: entry, in: modelContext, allTags: &tagCache)
+            entry.updatedAt = Date()
+            entry.isSynced = false
+        }
+
+        let bookChanged = entry.readingListItem?.id != linkedBook?.id
+        if bookChanged {
+            if let previous = entry.readingListItem {
+                previous.linkedResources.removeAll { $0.id == entry.id }
+            }
+            entry.readingListItem = linkedBook
+            if let linkedBook, !linkedBook.linkedResources.contains(where: { $0.id == entry.id }) {
+                linkedBook.linkedResources.append(entry)
+            }
+            entry.updatedAt = Date()
+            entry.isSynced = false
+        }
+
+        if titleChanged || domainChanged || bodyChanged || tagsChanged || bookChanged {
+            try? modelContext.save()
+        }
+    }
+
+    private var changeSignature: String {
+        let tagsKey = selectedTags.map(\.id.uuidString).sorted().joined(separator: ",")
+        let bookKey = linkedBook?.id.uuidString ?? "none"
+        return "\(title)-\(bodyText)-\(selectedDomain?.id.uuidString ?? "")-\(tagsKey)-\(bookKey)"
+    }
 
     var body: some View {
         ScrollView {
-            LazyVStack(alignment: .leading, spacing: 24) {
+            VStack(alignment: .leading, spacing: 24) {
                 detailHeader
 
-                if !entry.bodyText.isEmpty {
-                    Text(entry.bodyText)
-                        .font(.system(size: 14))
-                        .foregroundStyle(SymphoTheme.primaryText)
-                        .lineSpacing(4)
-                        .textSelection(.enabled)
-                        .frame(maxWidth: 720, alignment: .leading)
-                }
+                readingListLinkSection
+
+                LibraryTagsField(selectedTags: $selectedTags)
+                    .padding(.top, 4)
+
+                noteEditorSection
 
                 if !entry.urlString.isEmpty && entry.fileRelativePath == nil {
                     sourceLink
                 }
 
+                youtubePreview
                 attachmentsSection
             }
             .padding(.horizontal, SymphoTheme.outerPadding)
             .padding(.top, 16)
             .padding(.bottom, SymphoTheme.outerPadding)
         }
-        .libraryScrollChrome(title: entry.title, showsCompactTitle: $showsCompactTitle)
+        .libraryScrollChrome(title: title.isEmpty ? "Note Detail" : title, showsCompactTitle: $showsCompactTitle)
         .sheet(item: $selectedImage) { preview in
             LibraryImageViewer(preview: preview)
         }
+        .task(id: changeSignature) {
+            do {
+                try await Task.sleep(for: .milliseconds(800))
+                saveChanges()
+            } catch {}
+        }
+        .onDisappear {
+            saveChanges()
+        }
     }
-
+    
     private var detailHeader: some View {
         VStack(alignment: .leading, spacing: 16) {
             Button(action: onBack) {
@@ -492,19 +907,218 @@ private struct LibraryEntryDetailView: View {
                     .glassEffect(.regular, in: .rect(cornerRadius: 16))
 
                 VStack(alignment: .leading, spacing: 5) {
-                    Text(entry.title)
-                        .editorialHeader()
+                    TextField("Entry title", text: $title)
+                        .font(.system(size: 28, weight: .semibold))
+                        .textFieldStyle(.plain)
+                        .foregroundColor(SymphoTheme.primaryText)
 
                     HStack(spacing: 12) {
-                        if let domain = entry.domain {
-                            Label(domain.title, systemImage: DomainIcon.validated(domain.iconName))
+                        if !domains.isEmpty {
+                            Menu {
+                                Button {
+                                    selectedDomain = nil
+                                } label: {
+                                    Label("No Domain", systemImage: selectedDomain == nil ? "checkmark" : "circle")
+                                }
+
+                                Divider()
+
+                                ForEach(domains) { domain in
+                                    Button {
+                                        selectedDomain = domain
+                                    } label: {
+                                        Label(domain.title, systemImage: selectedDomain?.id == domain.id ? "checkmark" : DomainIcon.validated(domain.iconName))
+                                    }
+                                }
+                            } label: {
+                                Label(selectedDomain?.title ?? "Add Domain", systemImage: selectedDomain.map { DomainIcon.validated($0.iconName) } ?? "plus")
+                                    .font(.system(size: 11, weight: .medium))
+                                    .foregroundStyle(SymphoTheme.secondaryText)
+                            }
+                            .menuStyle(.borderlessButton)
+                            .fixedSize()
                         }
+                        
+                        Text("·")
+                            .foregroundStyle(SymphoTheme.tertiaryText)
+                            
                         Text("\(attachments.count) file\(attachments.count == 1 ? "" : "s")")
+                            .font(.system(size: 11))
+                            .foregroundStyle(SymphoTheme.secondaryText)
                     }
-                    .font(.system(size: 11))
-                    .foregroundStyle(SymphoTheme.secondaryText)
                 }
             }
+        }
+    }
+
+    private var readingListLinkSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Reading list")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(SymphoTheme.secondaryText)
+
+            if readingBooks.isEmpty {
+                Text("No books in your reading list yet.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(SymphoTheme.tertiaryText)
+            } else {
+                Picker("Linked book", selection: $linkedBook) {
+                    Text("None").tag(ReadingListItem?.none)
+                    ForEach(readingBooks) { book in
+                        Text(book.title).tag(Optional(book))
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.menu)
+            }
+        }
+        .padding(.horizontal, 11)
+        .padding(.vertical, 10)
+        .background {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(SymphoTheme.elevatedCanvas.opacity(0.72))
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(SymphoTheme.dividerColor, lineWidth: 1)
+        }
+    }
+
+    private var noteEditorSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Notes")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(SymphoTheme.primaryText)
+            
+            VStack(alignment: .leading, spacing: 6) {
+                ZStack(alignment: .topLeading) {
+                    MarkdownTextView(
+                        text: $bodyText,
+                        height: $editorHeight,
+                        cursorRect: $cursorRect,
+                        controller: markdownEditor,
+                        showsSlashMenu: showsSlashMenu,
+                        slashMenuIndex: $slashMenuIndex,
+                        onSlashMenuVisibilityChange: { isVisible in
+                            showsSlashMenu = isVisible
+                            if isVisible {
+                                slashMenuIndex = 0
+                            }
+                        },
+                        onSlashMenuMove: { delta in
+                            let count = slashMenuOptions.count
+                            guard count > 0 else { return }
+                            slashMenuIndex = (slashMenuIndex + delta + count) % count
+                        },
+                        onConfirmSlashMenu: confirmSlashMenuSelection
+                    )
+                    .frame(height: max(180, editorHeight))
+                    
+                    if showsSlashMenu {
+                        slashMenuOverlay
+                            .offset(x: min(max(10, cursorRect.origin.x), 540), y: cursorRect.origin.y + 24)
+                            .transition(.opacity)
+                    }
+                }
+                .padding(14)
+                .background(Color.white)
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .shadow(color: .black.opacity(0.04), radius: 8, y: 3)
+                .overlay {
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .stroke(SymphoTheme.dividerColor, lineWidth: 1)
+                }
+            }
+            .frame(maxWidth: 720)
+        }
+    }
+
+    private var slashMenuOptions: [SlashCommandOption] {
+        Array(SlashCommandOption.allCases)
+    }
+
+    private func confirmSlashMenuSelection() {
+        let options = slashMenuOptions
+        guard options.indices.contains(slashMenuIndex) else {
+            showsSlashMenu = false
+            return
+        }
+        markdownEditor.applySlashCommand(options[slashMenuIndex])
+        showsSlashMenu = false
+    }
+
+    private func applySlashMenuOption(_ option: SlashCommandOption) {
+        markdownEditor.applySlashCommand(option)
+        showsSlashMenu = false
+    }
+
+    private var slashMenuOverlay: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(Array(slashMenuOptions.enumerated()), id: \.element.id) { index, option in
+                Button {
+                    applySlashMenuOption(option)
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: option.iconName)
+                            .font(.system(size: 11))
+                            .foregroundColor(
+                                index == slashMenuIndex
+                                    ? SymphoTheme.primaryText
+                                    : SymphoTheme.secondaryText
+                            )
+                            .frame(width: 16)
+
+                        Text(option.title)
+                            .font(.system(size: 11, weight: index == slashMenuIndex ? .semibold : .medium))
+                            .foregroundStyle(SymphoTheme.primaryText)
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+                    .background {
+                        if index == slashMenuIndex {
+                            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .fill(SymphoTheme.elevatedCanvas.opacity(0.9))
+                        }
+                    }
+                }
+                .buttonStyle(.plain)
+
+                if index < slashMenuOptions.count - 1 {
+                    Divider()
+                }
+            }
+        }
+        .frame(width: 180)
+        .background(Color.white)
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .shadow(color: .black.opacity(0.12), radius: 10, y: 4)
+        .overlay {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(SymphoTheme.dividerColor, lineWidth: 1)
+        }
+    }
+
+    @ViewBuilder
+    private var youtubePreview: some View {
+        if let thumbnailURL = entry.youtubeThumbnailURL, let destination = normalizedURL {
+            Button {
+                openURL(destination)
+            } label: {
+                LibraryRemoteThumbnail(url: thumbnailURL, fallbackIcon: "play.rectangle")
+                    .frame(maxWidth: 620)
+                    .frame(height: 240)
+                    .overlay {
+                        Image(systemName: "play.fill")
+                            .font(.system(size: 19, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .frame(width: 48, height: 48)
+                            .background(.black.opacity(0.62), in: .circle)
+                    }
+                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            }
+            .buttonStyle(.plain)
         }
     }
 
@@ -513,12 +1127,36 @@ private struct LibraryEntryDetailView: View {
             guard let url = normalizedURL else { return }
             openURL(url)
         } label: {
-            Label(entry.urlString, systemImage: "link")
-                .font(.system(size: 12))
-                .foregroundStyle(SymphoTheme.secondaryText)
-                .lineLimit(1)
+            HStack(spacing: 8) {
+                Image(systemName: "link.circle.fill")
+                    .font(.system(size: 16))
+                    .foregroundStyle(SymphoTheme.primaryText)
+                
+                Text(entry.urlString)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(SymphoTheme.primaryText)
+                    .lineLimit(1)
+                
+                Spacer()
+                
+                Image(systemName: "arrow.up.right")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(SymphoTheme.secondaryText)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .background {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(Color.white.opacity(0.12))
+            }
+            .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 12))
+            .overlay {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .stroke(SymphoTheme.primaryText.opacity(0.12), lineWidth: 1)
+            }
         }
         .buttonStyle(.plain)
+        .frame(maxWidth: 720)
     }
 
     private var attachmentsSection: some View {
@@ -535,7 +1173,7 @@ private struct LibraryEntryDetailView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .librarySurface()
             } else {
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 230), spacing: 12)], spacing: 12) {
+                VStack(spacing: 8) {
                     ForEach(attachments) { attachment in
                         LibraryAttachmentCard(attachment: attachment) {
                             open(attachment)
@@ -553,7 +1191,14 @@ private struct LibraryEntryDetailView: View {
     }
 
     private var attachments: [LibraryDisplayAttachment] {
-        var result = entry.attachments.map {
+        var allAttachments = entry.attachments
+        if entry.resourceType == .note {
+            if let primaryMd = allAttachments.first(where: { $0.isMarkdown }) {
+                allAttachments.removeAll(where: { $0.id == primaryMd.id })
+            }
+        }
+        
+        var result = allAttachments.map {
             LibraryDisplayAttachment(
                 id: $0.id,
                 name: $0.displayName,
@@ -563,14 +1208,17 @@ private struct LibraryEntryDetailView: View {
         }
 
         if let legacyURL = LibraryStorage.legacyResolvedURL(for: entry) {
-            result.append(
-                LibraryDisplayAttachment(
-                    id: entry.id,
-                    name: legacyURL.lastPathComponent,
-                    contentType: UTType(filenameExtension: legacyURL.pathExtension)?.identifier ?? UTType.data.identifier,
-                    url: legacyURL
+            let isLegacyMarkdown = legacyURL.pathExtension.lowercased() == "md"
+            if !(entry.resourceType == .note && isLegacyMarkdown) {
+                result.append(
+                    LibraryDisplayAttachment(
+                        id: entry.id,
+                        name: legacyURL.lastPathComponent,
+                        contentType: UTType(filenameExtension: legacyURL.pathExtension)?.identifier ?? UTType.data.identifier,
+                        url: legacyURL
+                    )
                 )
-            )
+            }
         }
 
         return result
@@ -594,37 +1242,43 @@ private struct LibraryAttachmentCard: View {
 
     var body: some View {
         Button(action: onOpen) {
-            VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 12) {
                 preview
 
-                Label(attachment.name, systemImage: attachment.isImage ? "photo" : "doc")
+                Label(attachment.name, systemImage: attachment.iconName)
                     .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(SymphoTheme.primaryText)
                     .lineLimit(1)
+
+                Spacer()
+
+                Text(attachment.typeLabel)
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(SymphoTheme.tertiaryText)
+
+                Image(systemName: "arrow.up.right")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(SymphoTheme.tertiaryText)
             }
-            .padding(11)
-            .librarySurface()
+            .padding(8)
+            .background {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(Color.white.opacity(0.08))
+            }
+            .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 12))
+            .overlay {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .stroke(SymphoTheme.dividerColor, lineWidth: 1)
+            }
         }
         .buttonStyle(.plain)
     }
 
     @ViewBuilder
     private var preview: some View {
-        if attachment.isImage, let url = attachment.url {
-            LibraryLocalImage(url: url)
-                .aspectRatio(contentMode: .fill)
-                .frame(height: 132)
-                .frame(maxWidth: .infinity)
-                .clipped()
-                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-        } else {
-            Image(systemName: "doc")
-                .font(.system(size: 30, weight: .light))
-                .foregroundStyle(SymphoTheme.secondaryText)
-                .frame(maxWidth: .infinity)
-                .frame(height: 132)
-                .background(SymphoTheme.secondarySurface.opacity(0.55), in: .rect(cornerRadius: 10))
-        }
+        LibraryAttachmentThumbnail(attachment: attachment)
+            .frame(width: 58, height: 46)
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 }
 
@@ -633,13 +1287,24 @@ private struct CreateLibraryEntrySheet: View {
     @Environment(\.modelContext) private var modelContext
 
     let domains: [Domain]
+    let initialProject: Project?
 
     @State private var title = ""
     @State private var bodyText = ""
     @State private var sourceURL = ""
     @State private var selectedDomain: Domain?
+    @State private var selectedTags: [LibraryTag] = []
     @State private var selectedFiles: [URL] = []
     @State private var showsFileImporter = false
+    @State private var importErrorMessage: String?
+
+    @Query(sort: \LibraryTag.name) private var allTags: [LibraryTag]
+
+    init(domains: [Domain], initialDomain: Domain? = nil, initialProject: Project? = nil) {
+        self.domains = domains
+        self.initialProject = initialProject
+        _selectedDomain = State(initialValue: initialDomain ?? initialProject?.domain)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -667,6 +1332,8 @@ private struct CreateLibraryEntrySheet: View {
                         .labelsHidden()
                     }
                 }
+
+                LibraryTagsField(selectedTags: $selectedTags)
             }
 
             notesEditor
@@ -699,6 +1366,16 @@ private struct CreateLibraryEntrySheet: View {
         ) { result in
             guard case .success(let urls) = result else { return }
             selectedFiles.append(contentsOf: urls.filter { !selectedFiles.contains($0) })
+        }
+        .alert("Some files could not be saved", isPresented: Binding(
+            get: { importErrorMessage != nil },
+            set: { if !$0 { importErrorMessage = nil } }
+        )) {
+            Button("Done") {
+                dismiss()
+            }
+        } message: {
+            Text(importErrorMessage ?? "")
         }
     }
 
@@ -797,10 +1474,20 @@ private struct CreateLibraryEntrySheet: View {
             resourceType: sourceURL.isEmpty ? .note : .url,
             domain: selectedDomain
         )
+        if let initialProject {
+            entry.projects.append(initialProject)
+        }
         modelContext.insert(entry)
 
+        var tagCache = allTags
+        LibraryTagsHelper.applyTags(names: selectedTags.map(\.name), to: entry, in: modelContext, allTags: &tagCache)
+
+        var failedFiles: [String] = []
         for file in selectedFiles {
-            guard let imported = try? LibraryStorage.importFile(from: file, entryID: entry.id) else { continue }
+            guard let imported = try? LibraryStorage.importFile(from: file, entryID: entry.id, entryTitle: entry.title) else {
+                failedFiles.append(file.lastPathComponent)
+                continue
+            }
             let attachment = LibraryAttachment(
                 displayName: imported.displayName,
                 storedPath: imported.storedPath,
@@ -813,7 +1500,11 @@ private struct CreateLibraryEntrySheet: View {
         }
 
         try? modelContext.save()
-        dismiss()
+        if failedFiles.isEmpty {
+            dismiss()
+        } else {
+            importErrorMessage = "The entry was saved, but Sympho could not copy: \(failedFiles.joined(separator: ", "))."
+        }
     }
 }
 
@@ -843,6 +1534,8 @@ private struct LibraryInputRow<Content: View>: View {
     }
 }
 
+
+
 private struct LibraryDisplayAttachment: Identifiable {
     let id: UUID
     let name: String
@@ -851,6 +1544,30 @@ private struct LibraryDisplayAttachment: Identifiable {
 
     var isImage: Bool {
         UTType(contentType)?.conforms(to: .image) == true
+    }
+
+    var isVideo: Bool {
+        UTType(contentType)?.conforms(to: .movie) == true
+    }
+
+    var iconName: String {
+        if isImage { return "photo" }
+        if isVideo { return "film" }
+        if UTType(contentType)?.conforms(to: .pdf) == true { return "doc.richtext" }
+        if isMarkdown { return "note.text" }
+        return "doc"
+    }
+
+    var typeLabel: String {
+        if isImage { return "IMAGE" }
+        if isVideo { return "VIDEO" }
+        if UTType(contentType)?.conforms(to: .pdf) == true { return "PDF" }
+        if isMarkdown { return "NOTE" }
+        return "FILE"
+    }
+
+    var isMarkdown: Bool {
+        contentType == "net.daringfireball.markdown" || name.lowercased().hasSuffix(".md")
     }
 }
 
@@ -895,14 +1612,18 @@ private struct LibraryImageViewer: View {
 
 private struct LibraryLocalImage: View {
     let url: URL
+    @State private var image: NSImage?
 
     var body: some View {
         #if os(macOS)
-        if let data = LibraryStorage.data(at: url), let image = NSImage(data: data) {
+        if let image {
             Image(nsImage: image)
                 .resizable()
         } else {
             fallback
+                .task(id: url) {
+                    image = await LibraryFullImageCache.shared.image(for: url)
+                }
         }
         #else
         fallback
@@ -916,6 +1637,326 @@ private struct LibraryLocalImage: View {
             .foregroundStyle(SymphoTheme.secondaryText)
     }
 }
+
+private struct LibraryRemoteThumbnail: View {
+    let url: URL
+    let fallbackIcon: String
+
+    #if os(macOS)
+    @State private var image: NSImage?
+    #endif
+
+    var body: some View {
+        Group {
+            #if os(macOS)
+            if let image {
+                Image(nsImage: image)
+                    .resizable()
+                    .scaledToFill()
+            } else {
+                remotePlaceholder
+            }
+            #else
+            remotePlaceholder
+            #endif
+        }
+        .frame(minWidth: 0, maxWidth: .infinity)
+        .frame(height: 126)
+        .clipped()
+        #if os(macOS)
+        .task(id: url) {
+            image = await LibraryRemoteThumbnailCache.shared.image(for: url)
+        }
+        #endif
+    }
+
+    private var remotePlaceholder: some View {
+        ZStack {
+            SymphoTheme.secondarySurface.opacity(0.55)
+            Image(systemName: fallbackIcon)
+                .font(.system(size: 28, weight: .light))
+                .foregroundStyle(SymphoTheme.secondaryText)
+        }
+        .frame(height: 126)
+        .frame(maxWidth: .infinity)
+    }
+}
+
+private struct LibraryAttachmentThumbnail: View {
+    let attachment: LibraryDisplayAttachment
+
+    #if os(macOS)
+    @State private var thumbnail: NSImage?
+    #endif
+
+    var body: some View {
+        ZStack {
+            SymphoTheme.secondarySurface.opacity(0.55)
+
+            #if os(macOS)
+            if let thumbnail {
+                Image(nsImage: thumbnail)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(minWidth: 0, maxWidth: .infinity)
+                    .frame(height: 126)
+                    .clipped()
+            } else {
+                fallback
+            }
+            #else
+            fallback
+            #endif
+        }
+        .frame(height: 126)
+        .frame(maxWidth: .infinity)
+        .clipped()
+        #if os(macOS)
+        .task(id: attachment.id) {
+            guard let url = attachment.url else { return }
+            thumbnail = await LibraryThumbnailCache.shared.thumbnail(
+                for: url,
+                contentType: attachment.contentType
+            )
+        }
+        #endif
+    }
+
+    private var fallback: some View {
+        Image(systemName: attachment.iconName)
+            .font(.system(size: 30, weight: .light))
+            .foregroundStyle(SymphoTheme.secondaryText)
+            .frame(height: 126)
+            .frame(maxWidth: .infinity)
+    }
+
+}
+
+#if os(macOS)
+@MainActor
+private final class LibraryRemoteThumbnailCache {
+    static let shared = LibraryRemoteThumbnailCache()
+
+    private let cache = NSCache<NSURL, NSImage>()
+    private var inFlight: [URL: Task<NSImage?, Never>] = [:]
+    private lazy var session: URLSession = {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.httpMaximumConnectionsPerHost = 4
+        configuration.timeoutIntervalForRequest = 12
+        configuration.waitsForConnectivity = false
+        return URLSession(configuration: configuration)
+    }()
+
+    private init() {
+        cache.countLimit = 48
+        cache.totalCostLimit = 24 * 1024 * 1024
+    }
+
+    func image(for url: URL) async -> NSImage? {
+        if let cached = cache.object(forKey: url as NSURL) {
+            return cached
+        }
+
+        if let task = inFlight[url] {
+            return await task.value
+        }
+
+        let task = Task<NSImage?, Never> {
+            guard !Task.isCancelled else { return nil }
+
+            do {
+                let (data, response) = try await session.data(from: url)
+                guard !Task.isCancelled,
+                      let http = response as? HTTPURLResponse,
+                      (200 ... 299).contains(http.statusCode),
+                      let image = NSImage(data: data) else {
+                    return nil
+                }
+
+                return image
+            } catch {
+                return nil
+            }
+        }
+
+        inFlight[url] = task
+        let image = await task.value
+        inFlight[url] = nil
+
+        if let image {
+            cache.setObject(image, forKey: url as NSURL, cost: imageCost(image))
+        }
+
+        return image
+    }
+
+    private func imageCost(_ image: NSImage) -> Int {
+        Int(image.size.width * image.size.height * 4)
+    }
+}
+
+@MainActor
+private final class LibraryFullImageCache {
+    static let shared = LibraryFullImageCache()
+
+    private let cache = NSCache<NSURL, NSImage>()
+
+    private init() {
+        cache.countLimit = 12
+        cache.totalCostLimit = 96 * 1024 * 1024
+    }
+
+    func image(for url: URL) async -> NSImage? {
+        if let cached = cache.object(forKey: url as NSURL) {
+            return cached
+        }
+
+        let data = LibraryStorage.data(at: url)
+        guard let data, let image = NSImage(data: data) else { return nil }
+        cache.setObject(image, forKey: url as NSURL, cost: Int(image.size.width * image.size.height * 4))
+        return image
+    }
+}
+
+@MainActor
+private final class LibraryThumbnailCache {
+    static let shared = LibraryThumbnailCache()
+
+    private let cache = NSCache<NSURL, NSImage>()
+    private var requests: [URL: Task<NSImage?, Never>] = [:]
+
+    private init() {
+        cache.countLimit = 96
+        cache.totalCostLimit = 48 * 1024 * 1024
+    }
+
+    func thumbnail(for url: URL, contentType: String) async -> NSImage? {
+        if let cached = cache.object(forKey: url as NSURL) {
+            return cached
+        }
+
+        if let request = requests[url] {
+            return await request.value
+        }
+
+        let request = Task { await generateThumbnail(for: url, contentType: contentType) }
+        requests[url] = request
+        let image = await request.value
+        requests[url] = nil
+
+        if let image {
+            cache.setObject(image, forKey: url as NSURL, cost: imageCost(image))
+        }
+
+        return image
+    }
+
+    private func generateThumbnail(for url: URL, contentType: String) async -> NSImage? {
+        guard FileManager.default.isReadableFile(atPath: url.path) else { return nil }
+
+        let type = UTType(contentType) ?? UTType(filenameExtension: url.pathExtension)
+        if type?.conforms(to: .plainText) == true || url.pathExtension.lowercased() == "md" {
+            return nil
+        }
+
+        if type?.conforms(to: .image) == true {
+            return loadImageThumbnail(at: url)
+        }
+
+        guard shouldUseQuickLook(for: type) else { return nil }
+
+        await QLThumbnailGate.shared.acquire()
+        let thumbnail = await quickLookThumbnail(at: url)
+        await QLThumbnailGate.shared.release()
+        return thumbnail
+    }
+
+    private func loadImageThumbnail(at url: URL) -> NSImage? {
+        LibraryStorage.withWorkspaceAccess {
+            guard let data = try? Data(contentsOf: url, options: [.mappedIfSafe]),
+                  let image = NSImage(data: data) else {
+                return nil
+            }
+
+            return downsampled(image, maxPixelSize: 460)
+        }
+    }
+
+    private func shouldUseQuickLook(for type: UTType?) -> Bool {
+        guard let type else { return false }
+        if type.conforms(to: .image) { return false }
+        if type.conforms(to: .plainText) { return false }
+        return type.conforms(to: .pdf)
+            || type.conforms(to: .movie)
+            || type.conforms(to: .audiovisualContent)
+    }
+
+    private func quickLookThumbnail(at url: URL) async -> NSImage? {
+        await withCheckedContinuation { continuation in
+            LibraryStorage.withWorkspaceAccess {
+                let request = QLThumbnailGenerator.Request(
+                    fileAt: url,
+                    size: CGSize(width: 460, height: 264),
+                    scale: NSScreen.main?.backingScaleFactor ?? 2,
+                    representationTypes: .thumbnail
+                )
+
+                QLThumbnailGenerator.shared.generateBestRepresentation(for: request) { thumbnail, _ in
+                    continuation.resume(returning: thumbnail?.nsImage)
+                }
+            }
+        }
+    }
+
+    private func downsampled(_ image: NSImage, maxPixelSize: CGFloat) -> NSImage {
+        let longest = max(image.size.width, image.size.height)
+        guard longest > maxPixelSize, longest > 0 else { return image }
+
+        let scale = maxPixelSize / longest
+        let target = NSSize(width: image.size.width * scale, height: image.size.height * scale)
+        let scaled = NSImage(size: target)
+        scaled.lockFocus()
+        image.draw(
+            in: NSRect(origin: .zero, size: target),
+            from: .zero,
+            operation: .copy,
+            fraction: 1,
+            respectFlipped: true,
+            hints: [.interpolation: NSImageInterpolation.high]
+        )
+        scaled.unlockFocus()
+        return scaled
+    }
+
+    private func imageCost(_ image: NSImage) -> Int {
+        Int(image.size.width * image.size.height * 4)
+    }
+}
+
+private actor QLThumbnailGate {
+    static let shared = QLThumbnailGate()
+
+    private let limit = 2
+    private var active = 0
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func acquire() async {
+        if active < limit {
+            active += 1
+            return
+        }
+
+        await withCheckedContinuation { waiters.append($0) }
+        active += 1
+    }
+
+    func release() {
+        active = max(0, active - 1)
+        if waiters.isEmpty { return }
+        waiters.removeFirst().resume()
+    }
+}
+#endif
 
 private struct LibraryScrollChrome: ViewModifier {
     let title: String
@@ -945,6 +1986,35 @@ private struct LibraryScrollChrome: ViewModifier {
     }
 }
 
+private struct LibrarySearchSurface: ViewModifier {
+    let isFocused: Bool
+
+    func body(content: Content) -> some View {
+        content
+            .background {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(SymphoTheme.elevatedCanvas.opacity(isFocused ? 0.18 : 0.58))
+
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(.white.opacity(0.001))
+                        .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 12))
+                        .opacity(isFocused ? 1 : 0)
+                        .allowsHitTesting(false)
+                }
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .stroke(
+                        isFocused ? SymphoTheme.primaryText.opacity(0.18) : SymphoTheme.dividerColor,
+                        lineWidth: 1
+                    )
+            }
+            .shadow(color: .black.opacity(isFocused ? 0.06 : 0), radius: 8, y: 2)
+            .animation(.easeInOut(duration: 0.16), value: isFocused)
+        }
+}
+
 private extension View {
     func libraryScrollChrome(title: String, showsCompactTitle: Binding<Bool>) -> some View {
         modifier(LibraryScrollChrome(title: title, showsCompactTitle: showsCompactTitle))
@@ -960,4 +2030,570 @@ private extension View {
                 .stroke(SymphoTheme.dividerColor, lineWidth: 1)
         }
     }
+
+    func libraryCardPreview() -> some View {
+        frame(maxWidth: .infinity)
+            .frame(height: 126)
+            .clipped()
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
 }
+
+private extension LibraryAttachment {
+    var isMarkdown: Bool {
+        contentType == "net.daringfireball.markdown" || displayName.lowercased().hasSuffix(".md")
+    }
+
+    var previewPriority: Int {
+        guard let type = UTType(contentType) else { return 3 }
+        if type.conforms(to: .image) { return 0 }
+        if type.conforms(to: .movie) { return 1 }
+        return 2
+    }
+}
+
+private extension Resource {
+    var isMarkdownNote: Bool {
+        attachments.contains(where: \.isMarkdown)
+    }
+
+    var youtubeThumbnailURL: URL? {
+        guard let videoID = youtubeVideoID else { return nil }
+        return URL(string: "https://img.youtube.com/vi/\(videoID)/hqdefault.jpg")
+    }
+
+    private var youtubeVideoID: String? {
+        guard let url = URL(string: urlString),
+              let host = url.host?.lowercased() else {
+            return nil
+        }
+
+        if host == "youtu.be" || host.hasSuffix(".youtu.be") {
+            return url.pathComponents.dropFirst().first
+        }
+
+        guard host == "youtube.com" || host.hasSuffix(".youtube.com") else {
+            return nil
+        }
+
+        if url.path == "/watch" {
+            return URLComponents(url: url, resolvingAgainstBaseURL: false)?
+                .queryItems?
+                .first(where: { $0.name == "v" })?
+                .value
+        }
+
+        let parts = url.pathComponents.filter { $0 != "/" }
+        if let marker = parts.firstIndex(where: { $0 == "embed" || $0 == "shorts" }),
+           parts.indices.contains(marker + 1) {
+            return parts[marker + 1]
+        }
+
+        return nil
+    }
+}
+
+private extension Text {
+    init(markdown: String) {
+        if let attributed = try? AttributedString(markdown: markdown) {
+            self.init(attributed)
+        } else {
+            self.init(verbatim: markdown)
+        }
+    }
+}
+
+#if os(macOS)
+private final class MarkdownEditorController {
+    fileprivate weak var coordinator: MarkdownTextView.Coordinator?
+
+    func applySlashCommand(_ option: SlashCommandOption) {
+        coordinator?.applySlashCommand(option)
+    }
+}
+
+private final class MarkdownEditorTextView: NSTextView {
+    var keyDownHandler: ((NSEvent) -> Bool)?
+
+    override func keyDown(with event: NSEvent) {
+        if keyDownHandler?(event) == true {
+            return
+        }
+        super.keyDown(with: event)
+    }
+}
+
+private struct MarkdownTextView: NSViewRepresentable {
+    @Binding var text: String
+    @Binding var height: CGFloat
+    @Binding var cursorRect: CGRect
+    let controller: MarkdownEditorController
+    let showsSlashMenu: Bool
+    @Binding var slashMenuIndex: Int
+    var onSlashMenuVisibilityChange: (Bool) -> Void
+    var onSlashMenuMove: (Int) -> Void
+    var onConfirmSlashMenu: () -> Void
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let scrollView = NSScrollView()
+        scrollView.hasVerticalScroller = true
+        scrollView.hasHorizontalScroller = false
+        scrollView.drawsBackground = false
+
+        let textView = MarkdownEditorTextView()
+        textView.isRichText = true
+        textView.importsGraphics = false
+        textView.allowsUndo = true
+        textView.drawsBackground = false
+        textView.delegate = context.coordinator
+        textView.keyDownHandler = { event in
+            context.coordinator.handleKeyDown(event)
+        }
+
+        textView.isHorizontallyResizable = false
+        textView.isVerticallyResizable = true
+        textView.autoresizingMask = [.width]
+
+        if let textContainer = textView.textContainer {
+            textContainer.widthTracksTextView = true
+            textContainer.containerSize = NSSize(
+                width: scrollView.contentSize.width,
+                height: CGFloat.greatestFiniteMagnitude
+            )
+        }
+
+        scrollView.documentView = textView
+        context.coordinator.textView = textView
+        controller.coordinator = context.coordinator
+
+        textView.string = text
+        context.coordinator.applyHighlighting(textView: textView, text: text)
+        context.coordinator.updateHeight(textView: textView)
+        context.coordinator.updateCursorRect(textView: textView)
+
+        return scrollView
+    }
+
+    func updateNSView(_ nsView: NSScrollView, context: Context) {
+        guard let textView = nsView.documentView as? NSTextView else { return }
+
+        context.coordinator.parent = self
+        controller.coordinator = context.coordinator
+
+        if textView.string != text {
+            let selectedRanges = textView.selectedRanges
+            textView.string = text
+            context.coordinator.applyHighlighting(textView: textView, text: text)
+            textView.selectedRanges = selectedRanges
+            context.coordinator.updateHeight(textView: textView)
+            context.coordinator.updateCursorRect(textView: textView)
+        }
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(self)
+    }
+
+    final class Coordinator: NSObject, NSTextViewDelegate {
+        var parent: MarkdownTextView
+        weak var textView: NSTextView?
+
+        init(_ parent: MarkdownTextView) {
+            self.parent = parent
+        }
+
+        func handleKeyDown(_ event: NSEvent) -> Bool {
+            guard parent.showsSlashMenu else { return false }
+
+            switch event.keyCode {
+            case 125: // Down
+                parent.onSlashMenuMove(1)
+                return true
+            case 126: // Up
+                parent.onSlashMenuMove(-1)
+                return true
+            case 36, 76: // Return / keypad enter
+                parent.onConfirmSlashMenu()
+                return true
+            case 53: // Escape
+                parent.onSlashMenuVisibilityChange(false)
+                return true
+            default:
+                return false
+            }
+        }
+
+        func textDidChange(_ notification: Notification) {
+            guard let textView = notification.object as? NSTextView else { return }
+            let newText = textView.string
+            syncText(from: textView)
+
+            parent.onSlashMenuVisibilityChange(shouldShowSlashMenu(in: newText, selection: textView.selectedRange()))
+
+            applyHighlighting(textView: textView, text: newText)
+            updateHeight(textView: textView)
+            updateCursorRect(textView: textView)
+        }
+        
+        func textViewDidChangeSelection(_ notification: Notification) {
+            guard let textView = notification.object as? NSTextView else { return }
+            applyHighlighting(textView: textView, text: textView.string)
+            updateCursorRect(textView: textView)
+        }
+        
+        func updateHeight(textView: NSTextView) {
+            guard let layoutManager = textView.layoutManager,
+                  let textContainer = textView.textContainer else { return }
+            
+            layoutManager.ensureLayout(for: textContainer)
+            let usedSize = layoutManager.usedRect(for: textContainer).size
+            let newHeight = max(180, usedSize.height + 28) // Starting height 180, expanding dynamically
+            
+            DispatchQueue.main.async {
+                if self.parent.height != newHeight {
+                    self.parent.height = newHeight
+                }
+            }
+        }
+        
+        func updateCursorRect(textView: NSTextView) {
+            let selectedRange = textView.selectedRange()
+            guard let layoutManager = textView.layoutManager,
+                  let textContainer = textView.textContainer else { return }
+            
+            let glyphRange: NSRange
+            if selectedRange.location == 0 {
+                glyphRange = NSRange(location: 0, length: 0)
+            } else {
+                glyphRange = NSRange(location: selectedRange.location - 1, length: 1)
+            }
+            
+            let rect = layoutManager.boundingRect(forGlyphRange: glyphRange, in: textContainer)
+            let containerOrigin = textView.textContainerOrigin
+            let rectInTextView = rect.offsetBy(dx: containerOrigin.x, dy: containerOrigin.y)
+            let rectInScrollView = textView.convert(rectInTextView, to: textView.superview)
+            
+            DispatchQueue.main.async {
+                if self.parent.cursorRect != rectInScrollView {
+                    self.parent.cursorRect = rectInScrollView
+                }
+            }
+        }
+        
+        func applySlashCommand(_ option: SlashCommandOption) {
+            guard let textView = self.textView else { return }
+
+            let text = textView.string as NSString
+            let selectedRange = textView.selectedRange()
+
+            var lineStart = 0
+            var lineEnd = 0
+            text.getLineStart(&lineStart, end: nil, contentsEnd: &lineEnd, for: selectedRange)
+
+            let lineRange = NSRange(location: lineStart, length: lineEnd - lineStart)
+            var lineText = text.substring(with: lineRange)
+
+            var suffixNewline = ""
+            if lineText.hasSuffix("\n") {
+                suffixNewline = "\n"
+                lineText.removeLast()
+            }
+
+            if lineText.hasSuffix("/") {
+                lineText.removeLast()
+            }
+
+            textView.undoManager?.beginUndoGrouping()
+
+            switch option {
+            case .code:
+                let slashLocation = max(0, selectedRange.location - 1)
+                if slashLocation < text.length,
+                   text.substring(with: NSRange(location: slashLocation, length: 1)) == "/" {
+                    textView.replaceCharacters(in: NSRange(location: slashLocation, length: 1), with: "```\n\n```")
+                    textView.setSelectedRange(NSRange(location: slashLocation + 4, length: 0))
+                } else {
+                    textView.insertText("```\n\n```", replacementRange: selectedRange)
+                    textView.setSelectedRange(NSRange(location: selectedRange.location + 4, length: 0))
+                }
+            default:
+                let newText = option.markdownPrefix + lineText + suffixNewline
+                textView.replaceCharacters(in: lineRange, with: newText)
+                let cursor = lineStart + (newText as NSString).length - (suffixNewline.isEmpty ? 0 : 1)
+                textView.setSelectedRange(NSRange(location: cursor, length: 0))
+            }
+
+            textView.undoManager?.endUndoGrouping()
+
+            let updated = textView.string
+            applyHighlighting(textView: textView, text: updated)
+            syncText(from: textView)
+            updateHeight(textView: textView)
+            updateCursorRect(textView: textView)
+            parent.onSlashMenuVisibilityChange(false)
+        }
+
+        private func syncText(from textView: NSTextView) {
+            let updated = textView.string
+            if parent.text != updated {
+                parent.text = updated
+            }
+        }
+
+        private func shouldShowSlashMenu(in text: String, selection: NSRange) -> Bool {
+            let nsText = text as NSString
+            guard selection.location <= nsText.length else { return false }
+
+            var lineStart = 0
+            var lineEnd = 0
+            nsText.getLineStart(&lineStart, end: nil, contentsEnd: &lineEnd, for: selection)
+
+            var line = nsText.substring(with: NSRange(location: lineStart, length: lineEnd - lineStart))
+            if line.hasSuffix("\n") {
+                line.removeLast()
+            }
+
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            return trimmed == "/"
+        }
+        
+        func applyHighlighting(textView: NSTextView, text: String) {
+            guard let textStorage = textView.textStorage else { return }
+            
+            textStorage.beginEditing()
+            
+            let fullRange = NSRange(location: 0, length: textStorage.length)
+            textStorage.removeAttribute(.font, range: fullRange)
+            textStorage.removeAttribute(.foregroundColor, range: fullRange)
+            textStorage.removeAttribute(.underlineStyle, range: fullRange)
+            
+            let defaultFont = NSFont.systemFont(ofSize: 13)
+            let defaultColor = NSColor.labelColor
+            textStorage.addAttributes([
+                .font: defaultFont,
+                .foregroundColor: defaultColor
+            ], range: fullRange)
+            
+            let paragraphStyle = NSMutableParagraphStyle()
+            paragraphStyle.lineSpacing = 4.0
+            textStorage.addAttribute(.paragraphStyle, value: paragraphStyle, range: fullRange)
+            
+            let selectedRange = textView.selectedRange()
+            let textLength = (text as NSString).length
+            var activeLineRange = NSRange(location: NSNotFound, length: 0)
+            if selectedRange.location <= textLength {
+                var activeLineStart = 0
+                var activeLineEnd = 0
+                (text as NSString).getLineStart(&activeLineStart, end: nil, contentsEnd: &activeLineEnd, for: selectedRange)
+                activeLineRange = NSRange(location: activeLineStart, length: activeLineEnd - activeLineStart)
+            }
+            
+            let lines = text.components(separatedBy: "\n")
+            var currentIndex = 0
+            
+            for line in lines {
+                let lineRange = NSRange(location: currentIndex, length: (line as NSString).length)
+                let isLineActive = activeLineRange.location != NSNotFound &&
+                                   NSIntersectionRange(lineRange, activeLineRange).length > 0
+                
+                if line.hasPrefix("# ") {
+                    let h1Font = NSFont.boldSystemFont(ofSize: 22)
+                    textStorage.addAttribute(.font, value: h1Font, range: lineRange)
+                    
+                    let prefixRange = NSRange(location: currentIndex, length: 2)
+                    if isLineActive {
+                        textStorage.addAttributes([
+                            .foregroundColor: NSColor.quaternaryLabelColor
+                        ], range: prefixRange)
+                    } else {
+                        textStorage.addAttributes([
+                            .foregroundColor: NSColor.clear,
+                            .font: NSFont.systemFont(ofSize: 0.1)
+                        ], range: prefixRange)
+                    }
+                } else if line.hasPrefix("## ") {
+                    let h2Font = NSFont.boldSystemFont(ofSize: 18)
+                    textStorage.addAttribute(.font, value: h2Font, range: lineRange)
+                    
+                    let prefixRange = NSRange(location: currentIndex, length: 3)
+                    if isLineActive {
+                        textStorage.addAttributes([
+                            .foregroundColor: NSColor.quaternaryLabelColor
+                        ], range: prefixRange)
+                    } else {
+                        textStorage.addAttributes([
+                            .foregroundColor: NSColor.clear,
+                            .font: NSFont.systemFont(ofSize: 0.1)
+                        ], range: prefixRange)
+                    }
+                } else if line.hasPrefix("### ") {
+                    let h3Font = NSFont.boldSystemFont(ofSize: 15)
+                    textStorage.addAttribute(.font, value: h3Font, range: lineRange)
+                    
+                    let prefixRange = NSRange(location: currentIndex, length: 4)
+                    if isLineActive {
+                        textStorage.addAttributes([
+                            .foregroundColor: NSColor.quaternaryLabelColor
+                        ], range: prefixRange)
+                    } else {
+                        textStorage.addAttributes([
+                            .foregroundColor: NSColor.clear,
+                            .font: NSFont.systemFont(ofSize: 0.1)
+                        ], range: prefixRange)
+                    }
+                } else if line.hasPrefix("> ") {
+                    let quoteFont = NSFontManager.shared.convert(defaultFont, toHaveTrait: .italicFontMask)
+                    textStorage.addAttributes([
+                        .font: quoteFont,
+                        .foregroundColor: NSColor.secondaryLabelColor
+                    ], range: lineRange)
+                    
+                    let prefixRange = NSRange(location: currentIndex, length: 2)
+                    if isLineActive {
+                        textStorage.addAttributes([
+                            .foregroundColor: NSColor.quaternaryLabelColor
+                        ], range: prefixRange)
+                    } else {
+                        textStorage.addAttributes([
+                            .foregroundColor: NSColor.clear,
+                            .font: NSFont.systemFont(ofSize: 0.1)
+                        ], range: prefixRange)
+                    }
+                } else if line.hasPrefix("- ") || line.hasPrefix("* ") || line.hasPrefix("1. ") || line.hasPrefix("- [ ] ") || line.hasPrefix("- [x] ") {
+                    let prefixLength: Int
+                    if line.hasPrefix("- [ ] ") || line.hasPrefix("- [x] ") {
+                        prefixLength = 6
+                    } else if line.hasPrefix("1. ") {
+                        prefixLength = 3
+                    } else {
+                        prefixLength = 2
+                    }
+                    let prefixRange = NSRange(location: currentIndex, length: prefixLength)
+                    textStorage.addAttributes([
+                        .font: NSFont.boldSystemFont(ofSize: 13),
+                        .foregroundColor: NSColor.secondaryLabelColor
+                    ], range: prefixRange)
+                }
+                
+                currentIndex += (line as NSString).length + 1
+            }
+            
+            // Bold (**bold**)
+            applyInlineFormattingRegex(
+                textStorage: textStorage,
+                pattern: "(\\*\\*)([^*]+)(\\*\\*)",
+                trait: .boldFontMask,
+                familyName: nil,
+                color: nil,
+                activeLineRange: activeLineRange
+            )
+            
+            // Italic (*italic*)
+            applyInlineFormattingRegex(
+                textStorage: textStorage,
+                pattern: "(\\*)([^*]+)(\\*)",
+                trait: .italicFontMask,
+                familyName: nil,
+                color: nil,
+                activeLineRange: activeLineRange
+            )
+            
+            // Inline Code (`code`)
+            applyInlineFormattingRegex(
+                textStorage: textStorage,
+                pattern: "(`)([^`]+)(`)",
+                trait: nil,
+                familyName: "Menlo",
+                color: NSColor.systemPurple,
+                activeLineRange: activeLineRange
+            )
+            
+            // Code Blocks (```code```)
+            applyInlineFormattingRegex(
+                textStorage: textStorage,
+                pattern: "(```)([\\s\\S]*?)(```)",
+                trait: nil,
+                familyName: "Menlo",
+                color: NSColor.systemGray,
+                activeLineRange: activeLineRange
+            )
+            
+            textStorage.endEditing()
+        }
+        
+        private func applyInlineFormattingRegex(
+            textStorage: NSTextStorage,
+            pattern: String,
+            trait: NSFontTraitMask?,
+            familyName: String?,
+            color: NSColor?,
+            activeLineRange: NSRange
+        ) {
+            guard let regex = try? NSRegularExpression(pattern: pattern, options: []) else { return }
+            let text = textStorage.string
+            let matches = regex.matches(in: text, options: [], range: NSRange(location: 0, length: (text as NSString).length))
+            
+            for match in matches {
+                guard match.numberOfRanges >= 4 else { continue }
+                let openRange = match.range(at: 1)
+                let contentRange = match.range(at: 2)
+                let closeRange = match.range(at: 3)
+                
+                // Style content font
+                textStorage.enumerateAttribute(.font, in: contentRange, options: []) { (value, subrange, _) in
+                    if let font = value as? NSFont {
+                        var newFont = font
+                        if let trait {
+                            newFont = NSFontManager.shared.convert(newFont, toHaveTrait: trait)
+                        }
+                        if let familyName, let famFont = NSFont(name: familyName, size: font.pointSize) {
+                            newFont = famFont
+                        }
+                        textStorage.addAttribute(.font, value: newFont, range: subrange)
+                    }
+                }
+                
+                if let color {
+                    textStorage.addAttribute(.foregroundColor, value: color, range: contentRange)
+                }
+                
+                // Active line check
+                let isMarkerActive = (activeLineRange.location != NSNotFound) &&
+                                     (NSIntersectionRange(match.range, activeLineRange).length > 0)
+                
+                for markerRange in [openRange, closeRange] {
+                    if isMarkerActive {
+                        textStorage.addAttributes([
+                            .foregroundColor: NSColor.quaternaryLabelColor
+                        ], range: markerRange)
+                    } else {
+                        textStorage.addAttributes([
+                            .foregroundColor: NSColor.clear,
+                            .font: NSFont.systemFont(ofSize: 0.1)
+                        ], range: markerRange)
+                    }
+                }
+            }
+        }
+    }
+}
+#else
+private final class MarkdownEditorController {}
+
+private struct MarkdownTextView: View {
+    @Binding var text: String
+    @Binding var height: CGFloat
+    @Binding var cursorRect: CGRect
+    let controller: MarkdownEditorController
+    let showsSlashMenu: Bool
+    @Binding var slashMenuIndex: Int
+    var onSlashMenuVisibilityChange: (Bool) -> Void
+    var onSlashMenuMove: (Int) -> Void
+    var onConfirmSlashMenu: () -> Void
+
+    var body: some View {
+        TextEditor(text: $text)
+    }
+}
+#endif
+

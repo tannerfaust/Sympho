@@ -318,7 +318,7 @@ private struct TriageDestinationSheet: View {
 
     @State private var destination: InboxDestination = .domain
     @State private var selectedDomain: Domain?
-    @State private var selectedTrack: Track?
+    @State private var selectedTrackID: UUID?
     @State private var selectedModule: Module?
     @State private var selectedProject: Project?
 
@@ -434,22 +434,22 @@ private struct TriageDestinationSheet: View {
                 }
                 .labelsHidden()
                 .onChange(of: selectedDomain) {
-                    selectedTrack = nil
+                    selectedTrackID = nil
                     selectedModule = nil
                 }
             }
 
             if let domain = selectedDomain {
                 AssignmentPickerRow(title: "Track", iconName: "square.stack.3d.up") {
-                    Picker("Track", selection: $selectedTrack) {
-                        Text("Standalone modules").tag(nil as Track?)
+                    Picker("Track", selection: $selectedTrackID) {
+                        Text("Standalone modules").tag(nil as UUID?)
 
                         ForEach(domain.tracks.filter { !$0.isDeletedLocally }) { track in
-                            Text(track.title).tag(track as Track?)
+                            Text(track.title).tag(track.id as UUID?)
                         }
                     }
                     .labelsHidden()
-                    .onChange(of: selectedTrack) {
+                    .onChange(of: selectedTrackID) {
                         selectedModule = nil
                     }
                 }
@@ -479,6 +479,11 @@ private struct TriageDestinationSheet: View {
             }
             .labelsHidden()
         }
+    }
+
+    private var selectedTrack: Track? {
+        guard let selectedTrackID, let domain = selectedDomain else { return nil }
+        return domain.tracks.first { $0.id == selectedTrackID && !$0.isDeletedLocally }
     }
 
     private var availableModules: [Module] {

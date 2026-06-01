@@ -21,6 +21,7 @@ struct QuickCaptureOverlay: View {
     @State private var selectedProject: Project? = nil
     @State private var attachedFiles: [URL] = []
     @State private var isDraggingOver = false
+    @State private var importErrorMessage: String?
     
     // Fetch options for routing
     @Query(
@@ -286,6 +287,16 @@ struct QuickCaptureOverlay: View {
                     .animation(.easeInOut(duration: 0.15), value: isDraggingOver)
             }
         }
+        .alert("Some files could not be saved", isPresented: Binding(
+            get: { importErrorMessage != nil },
+            set: { if !$0 { importErrorMessage = nil } }
+        )) {
+            Button("Done") {
+                dismiss()
+            }
+        } message: {
+            Text(importErrorMessage ?? "")
+        }
     }
     
     // MARK: - Validation & Execution
@@ -317,44 +328,6 @@ struct QuickCaptureOverlay: View {
             return .video
         }
         return .pdf // default to document reference
-    }
-    
-    private func importFile(from srcURL: URL) -> URL? {
-        let fileManager = FileManager.default
-        var isDir: ObjCBool = false
-        guard fileManager.fileExists(atPath: srcURL.path, isDirectory: &isDir), !isDir.boolValue else {
-            return nil
-        }
-        
-        // Get application support directory
-        guard let appSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
-            return nil
-        }
-        
-        let destDir = appSupport.appendingPathComponent("SymphoStorage/Files", isDirectory: true)
-        
-        do {
-            // Create directory if it doesn't exist
-            try fileManager.createDirectory(at: destDir, withIntermediateDirectories: true, attributes: nil)
-            
-            // Generate unique filename to prevent overwrite
-            let filename = srcURL.lastPathComponent
-            let uniqueName = "\(UUID().uuidString)_\(filename)"
-            let destURL = destDir.appendingPathComponent(uniqueName)
-            
-            // Access security scoped resource if sandboxed
-            if srcURL.startAccessingSecurityScopedResource() {
-                defer { srcURL.stopAccessingSecurityScopedResource() }
-                try fileManager.copyItem(at: srcURL, to: destURL)
-            } else {
-                try fileManager.copyItem(at: srcURL, to: destURL)
-            }
-            
-            return destURL
-        } catch {
-            print("Failed to copy file to local database: \(error)")
-            return nil
-        }
     }
     
     private func capture() {
@@ -407,25 +380,35 @@ struct QuickCaptureOverlay: View {
         )
         
         // Import and attach multiple files
+        var failedFiles: [String] = []
         for fileURL in attachedFiles {
-            if let copiedURL = importFile(from: fileURL) {
-                let parseType = detectResourceType(for: fileURL)
-                let relativePath = "SymphoStorage/Files/\(copiedURL.lastPathComponent)"
-                
-                let res = Resource(
-                    title: fileURL.lastPathComponent,
-                    urlString: copiedURL.absoluteString,
-                    fileRelativePath: relativePath,
-                    resourceType: parseType,
-                    domain: selectedDomain
-                )
-                
-                modelContext.insert(res)
-                node.resources.append(res)
-                
-                if let proj = projectDestination {
-                    proj.resources.append(res)
-                }
+            let parseType = detectResourceType(for: fileURL)
+            let res = Resource(
+                title: fileURL.lastPathComponent,
+                resourceType: parseType,
+                domain: selectedDomain
+            )
+
+            guard let imported = try? LibraryStorage.importFile(from: fileURL, entryID: res.id, entryTitle: nodeTitle) else {
+                failedFiles.append(fileURL.lastPathComponent)
+                continue
+            }
+
+            let attachment = LibraryAttachment(
+                displayName: imported.displayName,
+                storedPath: imported.storedPath,
+                storageKind: imported.storageKind,
+                contentType: imported.contentType,
+                resource: res
+            )
+
+            modelContext.insert(res)
+            modelContext.insert(attachment)
+            res.attachments.append(attachment)
+            node.resources.append(res)
+
+            if let proj = projectDestination {
+                proj.resources.append(res)
             }
         }
         
@@ -456,7 +439,11 @@ struct QuickCaptureOverlay: View {
         
         textInput = ""
         attachedFiles = []
-        dismiss()
+        if failedFiles.isEmpty {
+            dismiss()
+        } else {
+            importErrorMessage = "The capture was saved, but Sympho could not copy: \(failedFiles.joined(separator: ", "))."
+        }
     }
     
     private func urlHost(from string: String) -> String {

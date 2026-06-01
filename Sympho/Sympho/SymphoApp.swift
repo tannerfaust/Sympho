@@ -21,7 +21,13 @@ struct SymphoApp: App {
                 Project.self,
                 Node.self,
                 Resource.self,
-                LibraryAttachment.self
+                LibraryAttachment.self,
+                LibraryTag.self,
+                ReadingListGroup.self,
+                ReadingListItem.self,
+                PlannerWeeklyBlock.self,
+                PlannerEvent.self,
+                PlannerDayNote.self
             ])
             let config = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
             container = try ModelContainer(for: schema, configurations: [config])

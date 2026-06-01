@@ -140,6 +140,39 @@ extension View {
 
 // MARK: - Buttons and Controls
 
+/// Circular liquid-glass add control (matches Projects / Domains).
+struct SymphoGlassAddButton: View {
+    var help: String = "Add"
+    var size: CGFloat = 34
+    var iconSize: CGFloat = 17
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "plus")
+                .font(.system(size: iconSize, weight: .semibold))
+                .frame(width: size, height: size)
+        }
+        .buttonStyle(.glass)
+        .buttonBorderShape(.circle)
+        .help(help)
+    }
+}
+
+extension View {
+    /// Right-click menu with Edit and Delete, matching overflow menus on cards.
+    func symphoCardContextMenu(edit: (() -> Void)? = nil, delete: (() -> Void)? = nil) -> some View {
+        contextMenu {
+            if let edit {
+                Button("Edit", systemImage: "pencil", action: edit)
+            }
+            if let delete {
+                Button("Delete", role: .destructive, action: delete)
+            }
+        }
+    }
+}
+
 struct SymphoPrimaryButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label

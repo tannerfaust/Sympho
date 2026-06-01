@@ -252,10 +252,20 @@ struct ResourceRow: View {
     var onRemove: () -> Void
     
     private var isLocalFile: Bool {
+        if !resource.attachments.isEmpty {
+            return true
+        }
         if let url = URL(string: resource.urlString) {
             return url.isFileURL
         }
         return resource.fileRelativePath != nil
+    }
+
+    private var destinationURL: URL? {
+        if let attachment = resource.attachments.first {
+            return LibraryStorage.resolvedURL(for: attachment)
+        }
+        return URL(string: resource.urlString)
     }
     
     var body: some View {
@@ -278,7 +288,7 @@ struct ResourceRow: View {
                     .lineLimit(1)
                 
                 if isLocalFile {
-                    Text("Local Database Document")
+                    Text("Saved file")
                         .font(.system(size: 10))
                         .foregroundColor(SymphoTheme.secondaryText)
                 } else {
@@ -294,7 +304,7 @@ struct ResourceRow: View {
             // Action Buttons
             HStack(spacing: 8) {
                 Button {
-                    if let url = URL(string: resource.urlString) {
+                    if let url = destinationURL {
                         #if os(macOS)
                         NSWorkspace.shared.open(url)
                         #endif

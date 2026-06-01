@@ -56,6 +56,57 @@ enum ProjectStatus: String, Codable, CaseIterable, Identifiable {
     }
 }
 
+enum ReadingPriority: String, Codable, CaseIterable, Identifiable {
+    case low = "low"
+    case normal = "normal"
+    case high = "high"
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .low: return "Low"
+        case .normal: return "Normal"
+        case .high: return "High"
+        }
+    }
+
+    var iconName: String {
+        switch self {
+        case .low: return "arrow.down"
+        case .normal: return "minus"
+        case .high: return "arrow.up"
+        }
+    }
+}
+
+enum ReadingStatus: String, Codable, CaseIterable, Identifiable {
+    case queue = "queue"
+    case reading = "reading"
+    case paused = "paused"
+    case finished = "finished"
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .queue: return "Want to Read"
+        case .reading: return "Reading"
+        case .paused: return "Paused"
+        case .finished: return "Finished"
+        }
+    }
+
+    var iconName: String {
+        switch self {
+        case .queue: return "books.vertical"
+        case .reading: return "book.fill"
+        case .paused: return "pause.circle"
+        case .finished: return "checkmark.circle.fill"
+        }
+    }
+}
+
 enum ResourceType: String, Codable, CaseIterable, Identifiable {
     case pdf = "pdf"
     case url = "url"
@@ -224,6 +275,7 @@ final class Track: Identifiable {
     @Attribute(.unique) var id: UUID
     var title: String
     var desc: String
+    var sortIndex: Int = 0
     var createdAt: Date
     var updatedAt: Date
     
@@ -237,10 +289,11 @@ final class Track: Identifiable {
     var isDeletedLocally: Bool
     var lastSyncedAt: Date?
     
-    init(id: UUID = UUID(), title: String, desc: String = "", domain: Domain? = nil) {
+    init(id: UUID = UUID(), title: String, desc: String = "", sortIndex: Int = 0, domain: Domain? = nil) {
         self.id = id
         self.title = title
         self.desc = desc
+        self.sortIndex = sortIndex
         self.domain = domain
         self.createdAt = Date()
         self.updatedAt = Date()
@@ -259,6 +312,34 @@ final class Track: Identifiable {
         let masteredCount = nodes.filter { $0.status == .mastered }.count
         return Double(masteredCount) / Double(nodes.count)
     }
+
+    var activeModules: [Module] {
+        modules
+            .filter { !$0.isDeletedLocally }
+            .sorted { lhs, rhs in
+                if lhs.sortIndex != rhs.sortIndex { return lhs.sortIndex < rhs.sortIndex }
+                return lhs.createdAt < rhs.createdAt
+            }
+    }
+
+    var activeProjects: [Project] {
+        projects.filter { !$0.isDeletedLocally }
+    }
+
+    var allResources: [Resource] {
+        var result = Set<Resource>()
+        for node in allNodes {
+            for res in node.resources where !res.isDeletedLocally {
+                result.insert(res)
+            }
+        }
+        for project in activeProjects {
+            for res in project.resources where !res.isDeletedLocally {
+                result.insert(res)
+            }
+        }
+        return Array(result).sorted { $0.createdAt > $1.createdAt }
+    }
 }
 
 @Model
@@ -266,6 +347,7 @@ final class Module: Identifiable {
     @Attribute(.unique) var id: UUID
     var title: String
     var desc: String
+    var sortIndex: Int = 0
     var createdAt: Date
     var updatedAt: Date
     
@@ -279,10 +361,11 @@ final class Module: Identifiable {
     var isDeletedLocally: Bool
     var lastSyncedAt: Date?
     
-    init(id: UUID = UUID(), title: String, desc: String = "", track: Track? = nil, domain: Domain? = nil) {
+    init(id: UUID = UUID(), title: String, desc: String = "", sortIndex: Int = 0, track: Track? = nil, domain: Domain? = nil) {
         self.id = id
         self.title = title
         self.desc = desc
+        self.sortIndex = sortIndex
         self.track = track
         self.domain = domain
         self.createdAt = Date()
@@ -340,6 +423,7 @@ final class Node: Identifiable {
     @Attribute(.unique) var id: UUID
     var title: String
     var desc: String
+    var sortIndex: Int = 0
     var statusValue: String
     var priorityValue: String
     var isOrphan: Bool
@@ -374,10 +458,11 @@ final class Node: Identifiable {
         set { priorityValue = newValue.rawValue }
     }
     
-    init(id: UUID = UUID(), title: String, desc: String = "", status: NodeStatus = .backlog, priority: NodePriority = .normal, isOrphan: Bool = false, module: Module? = nil, project: Project? = nil) {
+    init(id: UUID = UUID(), title: String, desc: String = "", sortIndex: Int = 0, status: NodeStatus = .backlog, priority: NodePriority = .normal, isOrphan: Bool = false, module: Module? = nil, project: Project? = nil) {
         self.id = id
         self.title = title
         self.desc = desc
+        self.sortIndex = sortIndex
         self.statusValue = status.rawValue
         self.priorityValue = priority.rawValue
         self.isOrphan = isOrphan
@@ -407,12 +492,14 @@ final class Resource: Identifiable, Hashable {
     @Relationship var nodes: [Node] = []
     @Relationship var projects: [Project] = []
     @Relationship(deleteRule: .cascade, inverse: \LibraryAttachment.resource) var attachments: [LibraryAttachment] = []
-    
+    @Relationship var tags: [LibraryTag] = []
+    var readingListItem: ReadingListItem?
+
     // Sync Metadata
     var isSynced: Bool
     var isDeletedLocally: Bool
     var lastSyncedAt: Date?
-    
+
     var resourceType: ResourceType {
         get { ResourceType(rawValue: resourceTypeValue) ?? .note }
         set { resourceTypeValue = newValue.rawValue }
@@ -451,6 +538,241 @@ final class Resource: Identifiable, Hashable {
     
     func hash(into hasher: inout Hasher) {
         hasher.combine(id)
+    }
+}
+
+@Model
+final class LibraryTag: Identifiable {
+    @Attribute(.unique) var id: UUID
+    var name: String
+    var createdAt: Date
+
+    @Relationship(inverse: \Resource.tags) var resources: [Resource] = []
+    @Relationship(inverse: \ReadingListItem.tags) var readingItems: [ReadingListItem] = []
+
+    init(id: UUID = UUID(), name: String) {
+        self.id = id
+        self.name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.createdAt = Date()
+    }
+}
+
+@Model
+final class ReadingListGroup: Identifiable {
+    @Attribute(.unique) var id: UUID
+    var title: String
+    var sortIndex: Int = 0
+    var createdAt: Date
+
+    @Relationship(deleteRule: .nullify, inverse: \ReadingListItem.group) var items: [ReadingListItem] = []
+
+    init(id: UUID = UUID(), title: String, sortIndex: Int = 0) {
+        self.id = id
+        self.title = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.sortIndex = sortIndex
+        self.createdAt = Date()
+    }
+}
+
+@Model
+final class ReadingListItem: Identifiable {
+    @Attribute(.unique) var id: UUID
+    var title: String
+    var author: String
+    var notes: String
+    var urlString: String
+    var statusValue: String
+    var priorityValue: String
+    var stoppedAtVolume: String
+    var stoppedAtPage: String
+    var sortIndex: Int = 0
+    var createdAt: Date
+    var updatedAt: Date
+
+    var domain: Domain?
+    var module: Module?
+    var group: ReadingListGroup?
+    @Relationship var tags: [LibraryTag] = []
+    @Relationship(inverse: \Resource.readingListItem) var linkedResources: [Resource] = []
+
+    var isSynced: Bool
+    var isDeletedLocally: Bool
+    var lastSyncedAt: Date?
+
+    var status: ReadingStatus {
+        get { ReadingStatus(rawValue: statusValue) ?? .queue }
+        set { statusValue = newValue.rawValue }
+    }
+
+    var priority: ReadingPriority {
+        get { ReadingPriority(rawValue: priorityValue) ?? .normal }
+        set { priorityValue = newValue.rawValue }
+    }
+
+    var progressMarker: String {
+        let volume = stoppedAtVolume.trimmingCharacters(in: .whitespacesAndNewlines)
+        let page = stoppedAtPage.trimmingCharacters(in: .whitespacesAndNewlines)
+        switch (volume.isEmpty, page.isEmpty) {
+        case (true, true): return ""
+        case (false, true): return volume
+        case (true, false): return page
+        case (false, false): return "\(volume) · \(page)"
+        }
+    }
+
+    init(
+        id: UUID = UUID(),
+        title: String,
+        author: String = "",
+        notes: String = "",
+        urlString: String = "",
+        status: ReadingStatus = .queue,
+        priority: ReadingPriority = .normal,
+        stoppedAtVolume: String = "",
+        stoppedAtPage: String = "",
+        sortIndex: Int = 0,
+        domain: Domain? = nil,
+        module: Module? = nil,
+        group: ReadingListGroup? = nil
+    ) {
+        self.id = id
+        self.title = title
+        self.author = author
+        self.notes = notes
+        self.urlString = urlString
+        self.statusValue = status.rawValue
+        self.priorityValue = priority.rawValue
+        self.stoppedAtVolume = stoppedAtVolume
+        self.stoppedAtPage = stoppedAtPage
+        self.sortIndex = sortIndex
+        self.domain = domain
+        self.module = module
+        self.group = group
+        self.createdAt = Date()
+        self.updatedAt = Date()
+        self.isSynced = false
+        self.isDeletedLocally = false
+        self.lastSyncedAt = nil
+    }
+}
+
+// MARK: - Planner
+
+enum PlannerBlockKind: String, Codable, CaseIterable, Identifiable {
+    case study = "study"
+    case training = "training"
+    case other = "other"
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .study: return "Study"
+        case .training: return "Training"
+        case .other: return "Other"
+        }
+    }
+
+    var iconName: String {
+        switch self {
+        case .study: return "brain.head.profile"
+        case .training: return "figure.run"
+        case .other: return "sparkles"
+        }
+    }
+}
+
+@Model
+final class PlannerWeeklyBlock: Identifiable {
+    @Attribute(.unique) var id: UUID
+    var title: String
+    var notes: String
+    var kindValue: String
+    /// 1 = Monday … 7 = Sunday (ISO weekday)
+    var weekday: Int
+    var startMinute: Int
+    var endMinute: Int
+    var sortIndex: Int = 0
+    var createdAt: Date
+    var updatedAt: Date
+
+    var kind: PlannerBlockKind {
+        get { PlannerBlockKind(rawValue: kindValue) ?? .study }
+        set { kindValue = newValue.rawValue }
+    }
+
+    init(
+        id: UUID = UUID(),
+        title: String,
+        notes: String = "",
+        kind: PlannerBlockKind = .study,
+        weekday: Int,
+        startMinute: Int,
+        endMinute: Int,
+        sortIndex: Int = 0
+    ) {
+        self.id = id
+        self.title = title
+        self.notes = notes
+        self.kindValue = kind.rawValue
+        self.weekday = weekday
+        self.startMinute = startMinute
+        self.endMinute = endMinute
+        self.sortIndex = sortIndex
+        self.createdAt = Date()
+        self.updatedAt = Date()
+    }
+}
+
+@Model
+final class PlannerEvent: Identifiable {
+    @Attribute(.unique) var id: UUID
+    var title: String
+    var notes: String
+    var kindValue: String
+    var startDate: Date
+    var endDate: Date
+    var createdAt: Date
+    var updatedAt: Date
+    var isDeletedLocally: Bool
+
+    var kind: PlannerBlockKind {
+        get { PlannerBlockKind(rawValue: kindValue) ?? .other }
+        set { kindValue = newValue.rawValue }
+    }
+
+    init(
+        id: UUID = UUID(),
+        title: String,
+        notes: String = "",
+        kind: PlannerBlockKind = .other,
+        startDate: Date,
+        endDate: Date
+    ) {
+        self.id = id
+        self.title = title
+        self.notes = notes
+        self.kindValue = kind.rawValue
+        self.startDate = startDate
+        self.endDate = endDate
+        self.createdAt = Date()
+        self.updatedAt = Date()
+        self.isDeletedLocally = false
+    }
+}
+
+@Model
+final class PlannerDayNote: Identifiable {
+    @Attribute(.unique) var id: UUID
+    @Attribute(.unique) var dayKey: String
+    var text: String
+    var updatedAt: Date
+
+    init(id: UUID = UUID(), dayKey: String, text: String = "") {
+        self.id = id
+        self.dayKey = dayKey
+        self.text = text
+        self.updatedAt = Date()
     }
 }
 
