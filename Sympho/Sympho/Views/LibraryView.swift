@@ -10,6 +10,7 @@ import SwiftData
 import UniformTypeIdentifiers
 #if os(macOS)
 import AppKit
+import MarkdownEngine
 import QuickLookThumbnailing
 #endif
 
@@ -664,48 +665,6 @@ private struct LibraryEntryCard: View {
     }
 }
 
-private enum SlashCommandOption: String, CaseIterable, Identifiable {
-    case h1, h2, h3, bullet, checklist, quote, code
-    
-    var id: String { rawValue }
-    
-    var title: String {
-        switch self {
-        case .h1: return "Heading 1"
-        case .h2: return "Heading 2"
-        case .h3: return "Heading 3"
-        case .bullet: return "Bulleted List"
-        case .checklist: return "Checklist"
-        case .quote: return "Quote"
-        case .code: return "Code Block"
-        }
-    }
-    
-    var iconName: String {
-        switch self {
-        case .h1: return "h.square"
-        case .h2: return "h.square"
-        case .h3: return "h.square"
-        case .bullet: return "list.bullet"
-        case .checklist: return "checkmark.square"
-        case .quote: return "text.quote"
-        case .code: return "chevron.left.forwardslash.chevron.right"
-        }
-    }
-    
-    var markdownPrefix: String {
-        switch self {
-        case .h1: return "# "
-        case .h2: return "## "
-        case .h3: return "### "
-        case .bullet: return "- "
-        case .checklist: return "- [ ] "
-        case .quote: return "> "
-        case .code: return "```\n\n```"
-        }
-    }
-}
-
 private struct LibraryEntryDetailView: View {
     @Environment(\.openURL) private var openURL
     @Environment(\.modelContext) private var modelContext
@@ -735,12 +694,6 @@ private struct LibraryEntryDetailView: View {
 
     @State private var showsCompactTitle = false
     @State private var selectedImage: LibraryImagePreview?
-    
-    @State private var showsSlashMenu = false
-    @State private var slashMenuIndex = 0
-    @State private var editorHeight: CGFloat = 180
-    @State private var cursorRect: CGRect = .zero
-    @State private var markdownEditor = MarkdownEditorController()
 
     init(entry: Resource, onBack: @escaping () -> Void) {
         self.entry = entry
@@ -990,37 +943,8 @@ private struct LibraryEntryDetailView: View {
                 .font(.system(size: 14, weight: .semibold))
                 .foregroundStyle(SymphoTheme.primaryText)
             
-            VStack(alignment: .leading, spacing: 6) {
-                ZStack(alignment: .topLeading) {
-                    MarkdownTextView(
-                        text: $bodyText,
-                        height: $editorHeight,
-                        cursorRect: $cursorRect,
-                        controller: markdownEditor,
-                        showsSlashMenu: showsSlashMenu,
-                        slashMenuIndex: $slashMenuIndex,
-                        onSlashMenuVisibilityChange: { isVisible in
-                            showsSlashMenu = isVisible
-                            if isVisible {
-                                slashMenuIndex = 0
-                            }
-                        },
-                        onSlashMenuMove: { delta in
-                            let count = slashMenuOptions.count
-                            guard count > 0 else { return }
-                            slashMenuIndex = (slashMenuIndex + delta + count) % count
-                        },
-                        onConfirmSlashMenu: confirmSlashMenuSelection
-                    )
-                    .frame(height: max(180, editorHeight))
-                    
-                    if showsSlashMenu {
-                        slashMenuOverlay
-                            .offset(x: min(max(10, cursorRect.origin.x), 540), y: cursorRect.origin.y + 24)
-                            .transition(.opacity)
-                    }
-                }
-                .padding(14)
+            MarkdownNoteEditor(text: $bodyText, documentId: entry.id.uuidString)
+                .frame(minHeight: 420)
                 .background(Color.white)
                 .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                 .shadow(color: .black.opacity(0.04), radius: 8, y: 3)
@@ -1028,75 +952,7 @@ private struct LibraryEntryDetailView: View {
                     RoundedRectangle(cornerRadius: 12, style: .continuous)
                         .stroke(SymphoTheme.dividerColor, lineWidth: 1)
                 }
-            }
-            .frame(maxWidth: 720)
-        }
-    }
-
-    private var slashMenuOptions: [SlashCommandOption] {
-        Array(SlashCommandOption.allCases)
-    }
-
-    private func confirmSlashMenuSelection() {
-        let options = slashMenuOptions
-        guard options.indices.contains(slashMenuIndex) else {
-            showsSlashMenu = false
-            return
-        }
-        markdownEditor.applySlashCommand(options[slashMenuIndex])
-        showsSlashMenu = false
-    }
-
-    private func applySlashMenuOption(_ option: SlashCommandOption) {
-        markdownEditor.applySlashCommand(option)
-        showsSlashMenu = false
-    }
-
-    private var slashMenuOverlay: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            ForEach(Array(slashMenuOptions.enumerated()), id: \.element.id) { index, option in
-                Button {
-                    applySlashMenuOption(option)
-                } label: {
-                    HStack(spacing: 8) {
-                        Image(systemName: option.iconName)
-                            .font(.system(size: 11))
-                            .foregroundColor(
-                                index == slashMenuIndex
-                                    ? SymphoTheme.primaryText
-                                    : SymphoTheme.secondaryText
-                            )
-                            .frame(width: 16)
-
-                        Text(option.title)
-                            .font(.system(size: 11, weight: index == slashMenuIndex ? .semibold : .medium))
-                            .foregroundStyle(SymphoTheme.primaryText)
-                    }
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 6)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .contentShape(Rectangle())
-                    .background {
-                        if index == slashMenuIndex {
-                            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                .fill(SymphoTheme.elevatedCanvas.opacity(0.9))
-                        }
-                    }
-                }
-                .buttonStyle(.plain)
-
-                if index < slashMenuOptions.count - 1 {
-                    Divider()
-                }
-            }
-        }
-        .frame(width: 180)
-        .background(Color.white)
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .shadow(color: .black.opacity(0.12), radius: 10, y: 4)
-        .overlay {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .stroke(SymphoTheme.dividerColor, lineWidth: 1)
+                .frame(maxWidth: 760)
         }
     }
 
@@ -2104,496 +1960,55 @@ private extension Text {
 }
 
 #if os(macOS)
-private final class MarkdownEditorController {
-    fileprivate weak var coordinator: MarkdownTextView.Coordinator?
-
-    func applySlashCommand(_ option: SlashCommandOption) {
-        coordinator?.applySlashCommand(option)
-    }
-}
-
-private final class MarkdownEditorTextView: NSTextView {
-    var keyDownHandler: ((NSEvent) -> Bool)?
-
-    override func keyDown(with event: NSEvent) {
-        if keyDownHandler?(event) == true {
-            return
-        }
-        super.keyDown(with: event)
-    }
-}
-
-private struct MarkdownTextView: NSViewRepresentable {
+private struct MarkdownNoteEditor: View {
     @Binding var text: String
-    @Binding var height: CGFloat
-    @Binding var cursorRect: CGRect
-    let controller: MarkdownEditorController
-    let showsSlashMenu: Bool
-    @Binding var slashMenuIndex: Int
-    var onSlashMenuVisibilityChange: (Bool) -> Void
-    var onSlashMenuMove: (Int) -> Void
-    var onConfirmSlashMenu: () -> Void
+    let documentId: String
 
-    func makeNSView(context: Context) -> NSScrollView {
-        let scrollView = NSScrollView()
-        scrollView.hasVerticalScroller = true
-        scrollView.hasHorizontalScroller = false
-        scrollView.drawsBackground = false
-
-        let textView = MarkdownEditorTextView()
-        textView.isRichText = true
-        textView.importsGraphics = false
-        textView.allowsUndo = true
-        textView.drawsBackground = false
-        textView.delegate = context.coordinator
-        textView.keyDownHandler = { event in
-            context.coordinator.handleKeyDown(event)
-        }
-
-        textView.isHorizontallyResizable = false
-        textView.isVerticallyResizable = true
-        textView.autoresizingMask = [.width]
-
-        if let textContainer = textView.textContainer {
-            textContainer.widthTracksTextView = true
-            textContainer.containerSize = NSSize(
-                width: scrollView.contentSize.width,
-                height: CGFloat.greatestFiniteMagnitude
-            )
-        }
-
-        scrollView.documentView = textView
-        context.coordinator.textView = textView
-        controller.coordinator = context.coordinator
-
-        textView.string = text
-        context.coordinator.applyHighlighting(textView: textView, text: text)
-        context.coordinator.updateHeight(textView: textView)
-        context.coordinator.updateCursorRect(textView: textView)
-
-        return scrollView
+    private var configuration: MarkdownEditorConfiguration {
+        var config = MarkdownEditorConfiguration.default
+        config.readingWidth = 680
+        config.textInsets = TextInsets(horizontal: 22, vertical: 22)
+        config.theme = MarkdownEditorTheme(
+            bodyText: .labelColor,
+            mutedText: .secondaryLabelColor,
+            disabledText: .tertiaryLabelColor,
+            headingMarker: .tertiaryLabelColor,
+            link: .linkColor,
+            incompleteLink: .systemBlue,
+            findMatchHighlight: .systemYellow,
+            findCurrentMatchHighlight: .systemYellow,
+            latexLightModeText: .labelColor,
+            latexDarkModeText: .labelColor,
+            strikethroughColor: .secondaryLabelColor
+        )
+        return config
     }
 
-    func updateNSView(_ nsView: NSScrollView, context: Context) {
-        guard let textView = nsView.documentView as? NSTextView else { return }
-
-        context.coordinator.parent = self
-        controller.coordinator = context.coordinator
-
-        if textView.string != text {
-            let selectedRanges = textView.selectedRanges
-            textView.string = text
-            context.coordinator.applyHighlighting(textView: textView, text: text)
-            textView.selectedRanges = selectedRanges
-            context.coordinator.updateHeight(textView: textView)
-            context.coordinator.updateCursorRect(textView: textView)
-        }
-    }
-
-    func makeCoordinator() -> Coordinator {
-        Coordinator(self)
-    }
-
-    final class Coordinator: NSObject, NSTextViewDelegate {
-        var parent: MarkdownTextView
-        weak var textView: NSTextView?
-
-        init(_ parent: MarkdownTextView) {
-            self.parent = parent
-        }
-
-        func handleKeyDown(_ event: NSEvent) -> Bool {
-            guard parent.showsSlashMenu else { return false }
-
-            switch event.keyCode {
-            case 125: // Down
-                parent.onSlashMenuMove(1)
-                return true
-            case 126: // Up
-                parent.onSlashMenuMove(-1)
-                return true
-            case 36, 76: // Return / keypad enter
-                parent.onConfirmSlashMenu()
-                return true
-            case 53: // Escape
-                parent.onSlashMenuVisibilityChange(false)
-                return true
-            default:
-                return false
-            }
-        }
-
-        func textDidChange(_ notification: Notification) {
-            guard let textView = notification.object as? NSTextView else { return }
-            let newText = textView.string
-            syncText(from: textView)
-
-            parent.onSlashMenuVisibilityChange(shouldShowSlashMenu(in: newText, selection: textView.selectedRange()))
-
-            applyHighlighting(textView: textView, text: newText)
-            updateHeight(textView: textView)
-            updateCursorRect(textView: textView)
-        }
-        
-        func textViewDidChangeSelection(_ notification: Notification) {
-            guard let textView = notification.object as? NSTextView else { return }
-            applyHighlighting(textView: textView, text: textView.string)
-            updateCursorRect(textView: textView)
-        }
-        
-        func updateHeight(textView: NSTextView) {
-            guard let layoutManager = textView.layoutManager,
-                  let textContainer = textView.textContainer else { return }
-            
-            layoutManager.ensureLayout(for: textContainer)
-            let usedSize = layoutManager.usedRect(for: textContainer).size
-            let newHeight = max(180, usedSize.height + 28) // Starting height 180, expanding dynamically
-            
-            DispatchQueue.main.async {
-                if self.parent.height != newHeight {
-                    self.parent.height = newHeight
-                }
-            }
-        }
-        
-        func updateCursorRect(textView: NSTextView) {
-            let selectedRange = textView.selectedRange()
-            guard let layoutManager = textView.layoutManager,
-                  let textContainer = textView.textContainer else { return }
-            
-            let glyphRange: NSRange
-            if selectedRange.location == 0 {
-                glyphRange = NSRange(location: 0, length: 0)
-            } else {
-                glyphRange = NSRange(location: selectedRange.location - 1, length: 1)
-            }
-            
-            let rect = layoutManager.boundingRect(forGlyphRange: glyphRange, in: textContainer)
-            let containerOrigin = textView.textContainerOrigin
-            let rectInTextView = rect.offsetBy(dx: containerOrigin.x, dy: containerOrigin.y)
-            let rectInScrollView = textView.convert(rectInTextView, to: textView.superview)
-            
-            DispatchQueue.main.async {
-                if self.parent.cursorRect != rectInScrollView {
-                    self.parent.cursorRect = rectInScrollView
-                }
-            }
-        }
-        
-        func applySlashCommand(_ option: SlashCommandOption) {
-            guard let textView = self.textView else { return }
-
-            let text = textView.string as NSString
-            let selectedRange = textView.selectedRange()
-
-            var lineStart = 0
-            var lineEnd = 0
-            text.getLineStart(&lineStart, end: nil, contentsEnd: &lineEnd, for: selectedRange)
-
-            let lineRange = NSRange(location: lineStart, length: lineEnd - lineStart)
-            var lineText = text.substring(with: lineRange)
-
-            var suffixNewline = ""
-            if lineText.hasSuffix("\n") {
-                suffixNewline = "\n"
-                lineText.removeLast()
-            }
-
-            if lineText.hasSuffix("/") {
-                lineText.removeLast()
-            }
-
-            textView.undoManager?.beginUndoGrouping()
-
-            switch option {
-            case .code:
-                let slashLocation = max(0, selectedRange.location - 1)
-                if slashLocation < text.length,
-                   text.substring(with: NSRange(location: slashLocation, length: 1)) == "/" {
-                    textView.replaceCharacters(in: NSRange(location: slashLocation, length: 1), with: "```\n\n```")
-                    textView.setSelectedRange(NSRange(location: slashLocation + 4, length: 0))
-                } else {
-                    textView.insertText("```\n\n```", replacementRange: selectedRange)
-                    textView.setSelectedRange(NSRange(location: selectedRange.location + 4, length: 0))
-                }
-            default:
-                let newText = option.markdownPrefix + lineText + suffixNewline
-                textView.replaceCharacters(in: lineRange, with: newText)
-                let cursor = lineStart + (newText as NSString).length - (suffixNewline.isEmpty ? 0 : 1)
-                textView.setSelectedRange(NSRange(location: cursor, length: 0))
-            }
-
-            textView.undoManager?.endUndoGrouping()
-
-            let updated = textView.string
-            applyHighlighting(textView: textView, text: updated)
-            syncText(from: textView)
-            updateHeight(textView: textView)
-            updateCursorRect(textView: textView)
-            parent.onSlashMenuVisibilityChange(false)
-        }
-
-        private func syncText(from textView: NSTextView) {
-            let updated = textView.string
-            if parent.text != updated {
-                parent.text = updated
-            }
-        }
-
-        private func shouldShowSlashMenu(in text: String, selection: NSRange) -> Bool {
-            let nsText = text as NSString
-            guard selection.location <= nsText.length else { return false }
-
-            var lineStart = 0
-            var lineEnd = 0
-            nsText.getLineStart(&lineStart, end: nil, contentsEnd: &lineEnd, for: selection)
-
-            var line = nsText.substring(with: NSRange(location: lineStart, length: lineEnd - lineStart))
-            if line.hasSuffix("\n") {
-                line.removeLast()
-            }
-
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            return trimmed == "/"
-        }
-        
-        func applyHighlighting(textView: NSTextView, text: String) {
-            guard let textStorage = textView.textStorage else { return }
-            
-            textStorage.beginEditing()
-            
-            let fullRange = NSRange(location: 0, length: textStorage.length)
-            textStorage.removeAttribute(.font, range: fullRange)
-            textStorage.removeAttribute(.foregroundColor, range: fullRange)
-            textStorage.removeAttribute(.underlineStyle, range: fullRange)
-            
-            let defaultFont = NSFont.systemFont(ofSize: 13)
-            let defaultColor = NSColor.labelColor
-            textStorage.addAttributes([
-                .font: defaultFont,
-                .foregroundColor: defaultColor
-            ], range: fullRange)
-            
-            let paragraphStyle = NSMutableParagraphStyle()
-            paragraphStyle.lineSpacing = 4.0
-            textStorage.addAttribute(.paragraphStyle, value: paragraphStyle, range: fullRange)
-            
-            let selectedRange = textView.selectedRange()
-            let textLength = (text as NSString).length
-            var activeLineRange = NSRange(location: NSNotFound, length: 0)
-            if selectedRange.location <= textLength {
-                var activeLineStart = 0
-                var activeLineEnd = 0
-                (text as NSString).getLineStart(&activeLineStart, end: nil, contentsEnd: &activeLineEnd, for: selectedRange)
-                activeLineRange = NSRange(location: activeLineStart, length: activeLineEnd - activeLineStart)
-            }
-            
-            let lines = text.components(separatedBy: "\n")
-            var currentIndex = 0
-            
-            for line in lines {
-                let lineRange = NSRange(location: currentIndex, length: (line as NSString).length)
-                let isLineActive = activeLineRange.location != NSNotFound &&
-                                   NSIntersectionRange(lineRange, activeLineRange).length > 0
-                
-                if line.hasPrefix("# ") {
-                    let h1Font = NSFont.boldSystemFont(ofSize: 22)
-                    textStorage.addAttribute(.font, value: h1Font, range: lineRange)
-                    
-                    let prefixRange = NSRange(location: currentIndex, length: 2)
-                    if isLineActive {
-                        textStorage.addAttributes([
-                            .foregroundColor: NSColor.quaternaryLabelColor
-                        ], range: prefixRange)
-                    } else {
-                        textStorage.addAttributes([
-                            .foregroundColor: NSColor.clear,
-                            .font: NSFont.systemFont(ofSize: 0.1)
-                        ], range: prefixRange)
-                    }
-                } else if line.hasPrefix("## ") {
-                    let h2Font = NSFont.boldSystemFont(ofSize: 18)
-                    textStorage.addAttribute(.font, value: h2Font, range: lineRange)
-                    
-                    let prefixRange = NSRange(location: currentIndex, length: 3)
-                    if isLineActive {
-                        textStorage.addAttributes([
-                            .foregroundColor: NSColor.quaternaryLabelColor
-                        ], range: prefixRange)
-                    } else {
-                        textStorage.addAttributes([
-                            .foregroundColor: NSColor.clear,
-                            .font: NSFont.systemFont(ofSize: 0.1)
-                        ], range: prefixRange)
-                    }
-                } else if line.hasPrefix("### ") {
-                    let h3Font = NSFont.boldSystemFont(ofSize: 15)
-                    textStorage.addAttribute(.font, value: h3Font, range: lineRange)
-                    
-                    let prefixRange = NSRange(location: currentIndex, length: 4)
-                    if isLineActive {
-                        textStorage.addAttributes([
-                            .foregroundColor: NSColor.quaternaryLabelColor
-                        ], range: prefixRange)
-                    } else {
-                        textStorage.addAttributes([
-                            .foregroundColor: NSColor.clear,
-                            .font: NSFont.systemFont(ofSize: 0.1)
-                        ], range: prefixRange)
-                    }
-                } else if line.hasPrefix("> ") {
-                    let quoteFont = NSFontManager.shared.convert(defaultFont, toHaveTrait: .italicFontMask)
-                    textStorage.addAttributes([
-                        .font: quoteFont,
-                        .foregroundColor: NSColor.secondaryLabelColor
-                    ], range: lineRange)
-                    
-                    let prefixRange = NSRange(location: currentIndex, length: 2)
-                    if isLineActive {
-                        textStorage.addAttributes([
-                            .foregroundColor: NSColor.quaternaryLabelColor
-                        ], range: prefixRange)
-                    } else {
-                        textStorage.addAttributes([
-                            .foregroundColor: NSColor.clear,
-                            .font: NSFont.systemFont(ofSize: 0.1)
-                        ], range: prefixRange)
-                    }
-                } else if line.hasPrefix("- ") || line.hasPrefix("* ") || line.hasPrefix("1. ") || line.hasPrefix("- [ ] ") || line.hasPrefix("- [x] ") {
-                    let prefixLength: Int
-                    if line.hasPrefix("- [ ] ") || line.hasPrefix("- [x] ") {
-                        prefixLength = 6
-                    } else if line.hasPrefix("1. ") {
-                        prefixLength = 3
-                    } else {
-                        prefixLength = 2
-                    }
-                    let prefixRange = NSRange(location: currentIndex, length: prefixLength)
-                    textStorage.addAttributes([
-                        .font: NSFont.boldSystemFont(ofSize: 13),
-                        .foregroundColor: NSColor.secondaryLabelColor
-                    ], range: prefixRange)
-                }
-                
-                currentIndex += (line as NSString).length + 1
-            }
-            
-            // Bold (**bold**)
-            applyInlineFormattingRegex(
-                textStorage: textStorage,
-                pattern: "(\\*\\*)([^*]+)(\\*\\*)",
-                trait: .boldFontMask,
-                familyName: nil,
-                color: nil,
-                activeLineRange: activeLineRange
+    var body: some View {
+        NativeTextViewWrapper(
+            text: $text,
+            configuration: configuration,
+            fontName: "SF Pro",
+            fontSize: 15,
+            documentId: documentId,
+            placeholder: NSAttributedString(
+                string: "Start writing...",
+                attributes: [
+                    .font: NSFont.systemFont(ofSize: 15),
+                    .foregroundColor: NSColor.placeholderTextColor
+                ]
             )
-            
-            // Italic (*italic*)
-            applyInlineFormattingRegex(
-                textStorage: textStorage,
-                pattern: "(\\*)([^*]+)(\\*)",
-                trait: .italicFontMask,
-                familyName: nil,
-                color: nil,
-                activeLineRange: activeLineRange
-            )
-            
-            // Inline Code (`code`)
-            applyInlineFormattingRegex(
-                textStorage: textStorage,
-                pattern: "(`)([^`]+)(`)",
-                trait: nil,
-                familyName: "Menlo",
-                color: NSColor.systemPurple,
-                activeLineRange: activeLineRange
-            )
-            
-            // Code Blocks (```code```)
-            applyInlineFormattingRegex(
-                textStorage: textStorage,
-                pattern: "(```)([\\s\\S]*?)(```)",
-                trait: nil,
-                familyName: "Menlo",
-                color: NSColor.systemGray,
-                activeLineRange: activeLineRange
-            )
-            
-            textStorage.endEditing()
-        }
-        
-        private func applyInlineFormattingRegex(
-            textStorage: NSTextStorage,
-            pattern: String,
-            trait: NSFontTraitMask?,
-            familyName: String?,
-            color: NSColor?,
-            activeLineRange: NSRange
-        ) {
-            guard let regex = try? NSRegularExpression(pattern: pattern, options: []) else { return }
-            let text = textStorage.string
-            let matches = regex.matches(in: text, options: [], range: NSRange(location: 0, length: (text as NSString).length))
-            
-            for match in matches {
-                guard match.numberOfRanges >= 4 else { continue }
-                let openRange = match.range(at: 1)
-                let contentRange = match.range(at: 2)
-                let closeRange = match.range(at: 3)
-                
-                // Style content font
-                textStorage.enumerateAttribute(.font, in: contentRange, options: []) { (value, subrange, _) in
-                    if let font = value as? NSFont {
-                        var newFont = font
-                        if let trait {
-                            newFont = NSFontManager.shared.convert(newFont, toHaveTrait: trait)
-                        }
-                        if let familyName, let famFont = NSFont(name: familyName, size: font.pointSize) {
-                            newFont = famFont
-                        }
-                        textStorage.addAttribute(.font, value: newFont, range: subrange)
-                    }
-                }
-                
-                if let color {
-                    textStorage.addAttribute(.foregroundColor, value: color, range: contentRange)
-                }
-                
-                // Active line check
-                let isMarkerActive = (activeLineRange.location != NSNotFound) &&
-                                     (NSIntersectionRange(match.range, activeLineRange).length > 0)
-                
-                for markerRange in [openRange, closeRange] {
-                    if isMarkerActive {
-                        textStorage.addAttributes([
-                            .foregroundColor: NSColor.quaternaryLabelColor
-                        ], range: markerRange)
-                    } else {
-                        textStorage.addAttributes([
-                            .foregroundColor: NSColor.clear,
-                            .font: NSFont.systemFont(ofSize: 0.1)
-                        ], range: markerRange)
-                    }
-                }
-            }
-        }
+        )
     }
 }
 #else
-private final class MarkdownEditorController {}
-
-private struct MarkdownTextView: View {
+private struct MarkdownNoteEditor: View {
     @Binding var text: String
-    @Binding var height: CGFloat
-    @Binding var cursorRect: CGRect
-    let controller: MarkdownEditorController
-    let showsSlashMenu: Bool
-    @Binding var slashMenuIndex: Int
-    var onSlashMenuVisibilityChange: (Bool) -> Void
-    var onSlashMenuMove: (Int) -> Void
-    var onConfirmSlashMenu: () -> Void
+    let documentId: String
 
     var body: some View {
         TextEditor(text: $text)
+            .padding(14)
     }
 }
 #endif
-

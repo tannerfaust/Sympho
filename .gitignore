@@ -26,6 +26,7 @@ xcuserdata/
 Packages/
 Package.pins
 Package.resolved
+!Sympho/Sympho.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved
 
 # Cursor / local tooling
 .cursor/
