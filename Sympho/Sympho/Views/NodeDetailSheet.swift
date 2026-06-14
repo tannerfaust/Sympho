@@ -301,24 +301,11 @@ struct ResourceRow: View {
             
             Spacer()
             
-            // Action Buttons
             HStack(spacing: 8) {
-                Button {
-                    if let url = destinationURL {
-                        #if os(macOS)
-                        NSWorkspace.shared.open(url)
-                        #endif
-                    }
-                } label: {
-                    Text(isLocalFile ? "Open File" : "Open Link")
-                        .font(.system(size: 11, weight: .bold))
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 5)
-                        .background(SymphoTheme.primaryText)
-                        .foregroundColor(SymphoTheme.primaryCanvas)
-                        .cornerRadius(6)
-                }
-                .buttonStyle(.plain)
+                Image(systemName: "arrow.up.right")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(SymphoTheme.secondaryText)
+                    .frame(width: 24, height: 24)
                 
                 Button(action: onRemove) {
                     Image(systemName: "trash")
@@ -328,6 +315,8 @@ struct ResourceRow: View {
                 .buttonStyle(.plain)
             }
         }
+        .contentShape(Rectangle())
+        .onTapGesture(perform: openResource)
         .padding(10)
         .background(SymphoTheme.elevatedCanvas.opacity(0.4))
         .cornerRadius(8)
@@ -335,5 +324,13 @@ struct ResourceRow: View {
             RoundedRectangle(cornerRadius: 8)
                 .stroke(SymphoTheme.dividerColor, lineWidth: 1)
         )
+    }
+
+    private func openResource() {
+        guard let url = destinationURL else { return }
+
+        #if os(macOS)
+        NSWorkspace.shared.open(url)
+        #endif
     }
 }

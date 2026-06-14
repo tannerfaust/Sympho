@@ -257,7 +257,7 @@ struct SymphoEditorField<Content: View>: View {
 /// Circular liquid-glass overflow menu — Edit and optional Delete.
 struct SymphoOverflowMenu: View {
     var help: String = "More actions"
-    var size: CGFloat = 30
+    var size: CGFloat = 36
     var iconSize: CGFloat = 14
     var onEdit: (() -> Void)?
     var onDelete: (() -> Void)?

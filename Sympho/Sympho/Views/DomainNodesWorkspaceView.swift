@@ -14,6 +14,8 @@ struct DomainNodesWorkspaceView: View {
 
     let domain: Domain
     let nodes: [Node]
+    var track: Track? = nil
+    var module: Module? = nil
     var onSelectNode: (Node) -> Void
     var onEditNode: (Node) -> Void
 
@@ -23,6 +25,8 @@ struct DomainNodesWorkspaceView: View {
     @State private var statusFilter: DomainNodesStatusFilter = .all
     @State private var criticalOnly = false
     @State private var draggedNodeID: UUID?
+    @State private var showInlineAddNode = false
+    @State private var newNodeTitle = ""
 
     private var filteredSortedNodes: [Node] {
         var list = nodes
@@ -46,12 +50,22 @@ struct DomainNodesWorkspaceView: View {
         }
     }
 
+    private var canAddNodes: Bool {
+        if module != nil { return true }
+        if track != nil { return !(track?.activeModules.isEmpty ?? true) }
+        return !domain.modules.isEmpty || domain.tracks.contains { !$0.activeModules.isEmpty }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             nodesToolbar
 
+            if showInlineAddNode {
+                inlineAddNodeField
+            }
+
             if nodes.isEmpty {
-                Text("No nodes yet.")
+                Text(emptyNodesMessage)
                     .font(.system(size: 12))
                     .foregroundStyle(SymphoTheme.secondaryText)
                     .padding(.vertical, 8)
@@ -104,12 +118,93 @@ struct DomainNodesWorkspaceView: View {
                 sortMenu
             }
 
-            if viewMode == .cards {
+            if viewMode == .cards, module == nil {
                 nodesFilterChip(title: group.shortTitle, icon: "rectangle.3.group", isActive: group != .none) {
                     groupMenu
                 }
             }
+
+            Button {
+                withAnimation(.snappy(duration: 0.15)) {
+                    showInlineAddNode.toggle()
+                }
+            } label: {
+                Image(systemName: "plus")
+                    .font(.system(size: 17, weight: .semibold))
+                    .frame(width: 34, height: 34)
+            }
+            .buttonStyle(.glass)
+            .buttonBorderShape(.circle)
+            .help(canAddNodes ? "Add node" : "Add a module first")
+            .disabled(!canAddNodes)
         }
+    }
+
+    private var emptyNodesMessage: String {
+        if track != nil, !canAddNodes {
+            return "No nodes yet. Add a module on the Modules tab first."
+        }
+        return "No nodes yet. Use + to add one."
+    }
+
+    private var inlineAddNodeField: some View {
+        HStack(spacing: 8) {
+            TextField("Node title…", text: $newNodeTitle, onCommit: saveNewNode)
+                .textFieldStyle(.plain)
+                .padding(.horizontal, 11)
+                .frame(height: 38)
+                .background {
+                    RoundedRectangle(cornerRadius: 11, style: .continuous)
+                        .fill(SymphoTheme.elevatedCanvas.opacity(0.58))
+                }
+                .overlay {
+                    RoundedRectangle(cornerRadius: 11, style: .continuous)
+                        .stroke(SymphoTheme.dividerColor, lineWidth: 1)
+                }
+
+            Button("Add", action: saveNewNode)
+                .buttonStyle(SymphoPrimaryButtonStyle())
+        }
+        .transition(.opacity)
+    }
+
+    private func saveNewNode() {
+        let title = newNodeTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !title.isEmpty, let module = targetModuleForNewNode else { return }
+
+        let newNode = Node(
+            title: title,
+            desc: "",
+            status: .backlog,
+            priority: .normal,
+            module: module
+        )
+        modelContext.insert(newNode)
+        module.nodes.append(newNode)
+        module.isSynced = false
+        module.updatedAt = Date()
+        track?.isSynced = false
+        track?.updatedAt = Date()
+        domain.isSynced = false
+        domain.updatedAt = Date()
+        try? modelContext.save()
+
+        newNodeTitle = ""
+        showInlineAddNode = false
+        onSelectNode(newNode)
+    }
+
+    private var targetModuleForNewNode: Module? {
+        if let module {
+            return module
+        }
+        if let track {
+            return track.activeModules.first
+        }
+        if let standalone = domain.modules.filter({ !$0.isDeletedLocally }).first {
+            return standalone
+        }
+        return domain.tracks.flatMap(\.activeModules).first
     }
 
     private func nodesModeButton(title: String, mode: DomainNodesViewMode, icon: String) -> some View {

@@ -330,7 +330,7 @@ struct TrackDetailView: View {
             }
 
             if track.activeModules.isEmpty {
-                Text("Add modules from Roadmap.")
+                Text("Add modules with + on the Modules tab.")
                     .captionSans()
             } else {
                 VStack(spacing: 0) {
@@ -411,6 +411,7 @@ struct TrackDetailView: View {
                 DomainNodesWorkspaceView(
                     domain: domain,
                     nodes: trackNodes,
+                    track: track,
                     onSelectNode: onSelectNode,
                     onEditNode: { editNodeTarget = $0 }
                 )

@@ -28,6 +28,109 @@ enum RoadmapEditTarget: Identifiable {
     }
 }
 
+// MARK: - Shared roadmap blocks
+
+private struct RoadmapModuleBlock: View {
+    let module: Module
+    var onSelect: () -> Void
+
+    private var nodeCount: Int {
+        module.nodes.filter { !$0.isDeletedLocally }.count
+    }
+
+    var body: some View {
+        Button(action: onSelect) {
+            HStack(spacing: 10) {
+                Image(systemName: "square.stack.3d.up")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(SymphoTheme.secondaryText)
+                    .frame(width: 34, height: 34)
+                    .background(SymphoTheme.elevatedCanvas.opacity(0.9), in: .rect(cornerRadius: 9))
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("MODULE")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(SymphoTheme.tertiaryText)
+                        .tracking(0.5)
+
+                    Text(module.title)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(SymphoTheme.primaryText)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.leading)
+                }
+
+                Spacer(minLength: 8)
+
+                Text(nodeCount == 1 ? "1 node" : "\(nodeCount) nodes")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(SymphoTheme.secondaryText)
+            }
+            .padding(11)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(SymphoTheme.primaryCanvas.opacity(0.72), in: .rect(cornerRadius: 11))
+            .overlay {
+                RoundedRectangle(cornerRadius: 11, style: .continuous)
+                    .stroke(SymphoTheme.dividerColor, lineWidth: 1)
+            }
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+private struct RoadmapInlineComposer: View {
+    let placeholder: String
+    @Binding var draftTitle: String
+    var onSave: () -> Void
+    var onCancel: () -> Void
+
+    var body: some View {
+        HStack(spacing: 8) {
+            TextField(placeholder, text: $draftTitle)
+                .textFieldStyle(.plain)
+                .font(.system(size: 13))
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+                .background(SymphoTheme.primaryCanvas.opacity(0.85), in: .rect(cornerRadius: 8))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .stroke(SymphoTheme.dividerColor, lineWidth: 1)
+                }
+                .onSubmit(onSave)
+
+            Button("Add", action: onSave)
+                .buttonStyle(SymphoSecondaryButtonStyle())
+
+            Button("Cancel", action: onCancel)
+                .buttonStyle(.plain)
+                .font(.system(size: 11))
+                .foregroundStyle(SymphoTheme.tertiaryText)
+        }
+        .padding(11)
+        .background(SymphoTheme.elevatedCanvas.opacity(0.45), in: .rect(cornerRadius: 11))
+    }
+}
+
+private struct RoadmapAddButton: View {
+    let title: String
+    var action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                Image(systemName: "plus")
+                    .font(.system(size: 10, weight: .bold))
+                Text(title)
+                    .font(.system(size: 11, weight: .semibold))
+            }
+            .foregroundStyle(SymphoTheme.secondaryText)
+            .padding(.vertical, 8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .buttonStyle(.plain)
+    }
+}
+
 // MARK: - Domain roadmap
 
 struct DomainRoadmapView: View {
@@ -59,28 +162,44 @@ struct DomainRoadmapView: View {
             header
 
             if sortedTracks.isEmpty && sortedStandaloneModules.isEmpty && !addingTrack && !addingStandaloneModule {
-                Text("Add a track, then modules inside it.")
-                    .font(.system(size: 12))
-                    .foregroundStyle(SymphoTheme.secondaryText)
+                roadmapEmptyState
             } else {
-                VStack(spacing: 0) {
+                VStack(spacing: 10) {
                     ForEach(sortedTracks) { track in
-                        trackSection(track)
-                        if track.id != sortedTracks.last?.id {
-                            roadmapDivider
-                        }
+                        trackCard(track)
+                            #if os(macOS)
+                            .onDrag {
+                                draggedTrackID = track.id
+                                return NSItemProvider(object: track.id.uuidString as NSString)
+                            }
+                            .onDrop(
+                                of: [.text],
+                                delegate: RoadmapReorderDropDelegate(
+                                    destinationID: track.id,
+                                    orderedIDs: sortedTracks.map(\.id),
+                                    draggedID: draggedTrackID,
+                                    onReorder: applyTrackOrder,
+                                    onEnd: { draggedTrackID = nil }
+                                )
+                            )
+                            #endif
                     }
                 }
 
                 if !sortedStandaloneModules.isEmpty || addingStandaloneModule {
-                    standaloneSection
+                    standaloneCard
                 }
             }
 
             if addingTrack {
-                inlineComposer(placeholder: "Track name", onSave: saveNewTrack)
+                RoadmapInlineComposer(
+                    placeholder: "Track name",
+                    draftTitle: $draftTitle,
+                    onSave: saveNewTrack,
+                    onCancel: cancelComposer
+                )
             } else {
-                addAction("Add track", action: beginAddingTrack)
+                RoadmapAddButton(title: "Add track", action: beginAddingTrack)
             }
         }
         .onAppear(perform: seedExpansionIfNeeded)
@@ -93,90 +212,117 @@ struct DomainRoadmapView: View {
 
     private var header: some View {
         HStack {
-            Text("Roadmap")
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(SymphoTheme.primaryText)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Roadmap")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(SymphoTheme.primaryText)
+
+                Text("Tracks and modules in learning order")
+                    .font(.system(size: 11))
+                    .foregroundStyle(SymphoTheme.tertiaryText)
+            }
+
             Spacer()
+
             Button(action: beginAddingTrack) {
                 Image(systemName: "plus")
                     .font(.system(size: 12, weight: .semibold))
+                    .frame(width: 28, height: 28)
             }
-            .buttonStyle(.plain)
-            .foregroundStyle(SymphoTheme.secondaryText)
+            .buttonStyle(.glass)
+            .buttonBorderShape(.circle)
+            .help("Add track")
+        }
+    }
+
+    private var roadmapEmptyState: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("No roadmap yet")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(SymphoTheme.primaryText)
+
+            Text("Add a track, then place modules inside it.")
+                .font(.system(size: 12))
+                .foregroundStyle(SymphoTheme.secondaryText)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(14)
+        .background(SymphoTheme.elevatedCanvas.opacity(0.5), in: .rect(cornerRadius: 14))
+        .overlay {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(SymphoTheme.dividerColor, style: StrokeStyle(lineWidth: 1, dash: [6, 4]))
         }
     }
 
     @ViewBuilder
-    private func trackSection(_ track: Track) -> some View {
+    private func trackCard(_ track: Track) -> some View {
         let isExpanded = expandedTrackIDs.contains(track.id)
         let modules = track.modules.filter { !$0.isDeletedLocally }.roadmapSorted()
 
         VStack(alignment: .leading, spacing: 0) {
-            trackRow(track, isExpanded: isExpanded)
-                #if os(macOS)
-                .onDrag {
-                    draggedTrackID = track.id
-                    return NSItemProvider(object: track.id.uuidString as NSString)
+            HStack(alignment: .top, spacing: 10) {
+                Button {
+                    withAnimation(.snappy(duration: 0.15)) { toggleTrack(track.id) }
+                } label: {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(SymphoTheme.secondaryText)
+                        .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                        .frame(width: 24, height: 24)
+                        .glassEffect(.regular, in: .circle)
                 }
-                .onDrop(
-                    of: [.text],
-                    delegate: RoadmapReorderDropDelegate(
-                        destinationID: track.id,
-                        orderedIDs: sortedTracks.map(\.id),
-                        draggedID: draggedTrackID,
-                        onReorder: applyTrackOrder,
-                        onEnd: { draggedTrackID = nil }
-                    )
-                )
-                #endif
+                .buttonStyle(.plain)
+
+                Button(action: { onSelectTrack(track) }) {
+                    HStack(alignment: .top, spacing: 12) {
+                        Image(systemName: "point.topleft.down.curvedto.point.bottomright.up")
+                            .font(.system(size: 18, weight: .medium))
+                            .foregroundStyle(SymphoTheme.primaryText)
+                            .frame(width: 40, height: 40)
+                            .glassEffect(.regular, in: .rect(cornerRadius: 12))
+
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("TRACK")
+                                .font(.system(size: 9, weight: .bold))
+                                .foregroundStyle(SymphoTheme.tertiaryText)
+                                .tracking(0.5)
+
+                            Text(track.title)
+                                .font(.system(size: 15, weight: .semibold))
+                                .foregroundStyle(SymphoTheme.primaryText)
+                                .lineLimit(2)
+                                .multilineTextAlignment(.leading)
+
+                            HStack(spacing: 12) {
+                                Label("\(modules.count) modules", systemImage: "square.stack.3d.up")
+                                Label("\(track.allNodes.count) nodes", systemImage: "circle.hexagonpath")
+                            }
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(SymphoTheme.secondaryText)
+                        }
+
+                        Spacer(minLength: 0)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(14)
+            .contextMenu {
+                Button("Edit", systemImage: "pencil") { editTarget = .track(track) }
+                Button("Delete", role: .destructive) { softDeleteTrack(track) }
+            }
 
             if isExpanded {
-                VStack(spacing: 0) {
+                VStack(spacing: 8) {
                     ForEach(modules) { module in
-                        moduleRow(module, leadingInset: 28)
-                            #if os(macOS)
-                            .onDrag {
-                                draggedModuleID = module.id
-                                return NSItemProvider(object: module.id.uuidString as NSString)
-                            }
-                            .onDrop(
-                                of: [.text],
-                                delegate: RoadmapReorderDropDelegate(
-                                    destinationID: module.id,
-                                    orderedIDs: modules.map(\.id),
-                                    draggedID: draggedModuleID,
-                                    onReorder: { applyModuleOrder($0, track: track) },
-                                    onEnd: { draggedModuleID = nil }
-                                )
-                            )
-                            #endif
-                    }
-
-                    if addingModuleTrackID == track.id {
-                        inlineComposer(placeholder: "Module name", onSave: { saveNewModule(in: track) })
-                            .padding(.leading, 28)
-                    } else {
-                        addAction("Add module", inset: 28) {
-                            beginAddingModule(in: track)
+                        RoadmapModuleBlock(module: module) {
+                            onSelectModule(module)
                         }
-                    }
-                }
-                .padding(.top, 2)
-                .padding(.bottom, 6)
-            }
-        }
-    }
-
-    private var standaloneSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Without track")
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(SymphoTheme.tertiaryText)
-                .padding(.top, 16)
-
-            VStack(spacing: 0) {
-                ForEach(sortedStandaloneModules) { module in
-                    moduleRow(module, leadingInset: 0)
+                        .contextMenu {
+                            Button("Edit", systemImage: "pencil") { editTarget = .module(module) }
+                            Button("Delete", role: .destructive) { softDeleteModule(module) }
+                        }
                         #if os(macOS)
                         .onDrag {
                             draggedModuleID = module.id
@@ -186,70 +332,96 @@ struct DomainRoadmapView: View {
                             of: [.text],
                             delegate: RoadmapReorderDropDelegate(
                                 destinationID: module.id,
-                                orderedIDs: sortedStandaloneModules.map(\.id),
+                                orderedIDs: modules.map(\.id),
                                 draggedID: draggedModuleID,
-                                onReorder: { applyModuleOrder($0, track: nil) },
+                                onReorder: { applyModuleOrder($0, track: track) },
                                 onEnd: { draggedModuleID = nil }
                             )
                         )
                         #endif
+                    }
+
+                    if addingModuleTrackID == track.id {
+                        RoadmapInlineComposer(
+                            placeholder: "Module name",
+                            draftTitle: $draftTitle,
+                            onSave: { saveNewModule(in: track) },
+                            onCancel: cancelComposer
+                        )
+                    } else {
+                        RoadmapAddButton(title: "Add module", action: { beginAddingModule(in: track) })
+                    }
+                }
+                .padding(.horizontal, 12)
+                .padding(.bottom, 12)
+            }
+        }
+        .background(SymphoTheme.elevatedCanvas.opacity(0.55), in: .rect(cornerRadius: 14))
+        .overlay {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(SymphoTheme.dividerColor, lineWidth: 1)
+        }
+    }
+
+    private var standaloneCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Standalone modules")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(SymphoTheme.primaryText)
+
+                Text("Modules not assigned to a track")
+                    .font(.system(size: 11))
+                    .foregroundStyle(SymphoTheme.tertiaryText)
+            }
+            .padding(.horizontal, 14)
+            .padding(.top, 14)
+
+            VStack(spacing: 8) {
+                ForEach(sortedStandaloneModules) { module in
+                    RoadmapModuleBlock(module: module) {
+                        onSelectModule(module)
+                    }
+                    .contextMenu {
+                        Button("Edit", systemImage: "pencil") { editTarget = .module(module) }
+                        Button("Delete", role: .destructive) { softDeleteModule(module) }
+                    }
+                    #if os(macOS)
+                    .onDrag {
+                        draggedModuleID = module.id
+                        return NSItemProvider(object: module.id.uuidString as NSString)
+                    }
+                    .onDrop(
+                        of: [.text],
+                        delegate: RoadmapReorderDropDelegate(
+                            destinationID: module.id,
+                            orderedIDs: sortedStandaloneModules.map(\.id),
+                            draggedID: draggedModuleID,
+                            onReorder: { applyModuleOrder($0, track: nil) },
+                            onEnd: { draggedModuleID = nil }
+                        )
+                    )
+                    #endif
+                }
+
+                if addingStandaloneModule {
+                    RoadmapInlineComposer(
+                        placeholder: "Module name",
+                        draftTitle: $draftTitle,
+                        onSave: saveNewStandaloneModule,
+                        onCancel: cancelComposer
+                    )
+                } else {
+                    RoadmapAddButton(title: "Add module", action: beginAddingStandaloneModule)
                 }
             }
-
-            if addingStandaloneModule {
-                inlineComposer(placeholder: "Module name", onSave: saveNewStandaloneModule)
-            } else {
-                addAction("Add module", action: beginAddingStandaloneModule)
-            }
+            .padding(.horizontal, 12)
+            .padding(.bottom, 12)
         }
-    }
-
-    private func trackRow(_ track: Track, isExpanded: Bool) -> some View {
-        HStack(spacing: 6) {
-            Button {
-                withAnimation(.snappy(duration: 0.15)) { toggleTrack(track.id) }
-            } label: {
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 10, weight: .bold))
-                    .foregroundStyle(SymphoTheme.tertiaryText)
-                    .rotationEffect(.degrees(isExpanded ? 90 : 0))
-                    .frame(width: 20, height: 32)
-            }
-            .buttonStyle(.plain)
-
-            Button { onSelectTrack(track) } label: {
-                Text(track.title)
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(SymphoTheme.primaryText)
-                    .lineLimit(1)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .buttonStyle(.plain)
-        }
-        .frame(minHeight: 36)
-        .contentShape(Rectangle())
-        .contextMenu {
-            Button("Edit", systemImage: "pencil") { editTarget = .track(track) }
-            Button("Delete", role: .destructive) { softDeleteTrack(track) }
-        }
-    }
-
-    private func moduleRow(_ module: Module, leadingInset: CGFloat) -> some View {
-        Button { onSelectModule(module) } label: {
-            Text(module.title)
-                .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(SymphoTheme.primaryText)
-                .lineLimit(1)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.leading, leadingInset)
-                .padding(.trailing, 8)
-                .padding(.vertical, 8)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .contextMenu {
-            Button("Edit", systemImage: "pencil") { editTarget = .module(module) }
-            Button("Delete", role: .destructive) { softDeleteModule(module) }
+        .background(SymphoTheme.elevatedCanvas.opacity(0.55), in: .rect(cornerRadius: 14))
+        .overlay {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(SymphoTheme.dividerColor, lineWidth: 1)
         }
     }
 
@@ -267,41 +439,6 @@ struct DomainRoadmapView: View {
         module.updatedAt = Date()
         touchDomain()
         try? modelContext.save()
-    }
-
-    private var roadmapDivider: some View {
-        Rectangle()
-            .fill(SymphoTheme.dividerColor.opacity(0.7))
-            .frame(height: 1)
-            .padding(.leading, 26)
-    }
-
-    private func addAction(_ title: String, inset: CGFloat = 0, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Text(title)
-                .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(SymphoTheme.tertiaryText)
-                .padding(.leading, inset)
-                .padding(.vertical, 8)
-        }
-        .buttonStyle(.plain)
-    }
-
-    private func inlineComposer(placeholder: String, onSave: @escaping () -> Void) -> some View {
-        HStack(spacing: 8) {
-            TextField(placeholder, text: $draftTitle)
-                .textFieldStyle(.plain)
-                .font(.system(size: 13))
-                .onSubmit(onSave)
-            Button("Add", action: onSave)
-                .font(.system(size: 11, weight: .semibold))
-                .buttonStyle(.plain)
-            Button("Cancel", action: cancelComposer)
-                .font(.system(size: 11))
-                .foregroundStyle(SymphoTheme.tertiaryText)
-                .buttonStyle(.plain)
-        }
-        .padding(.vertical, 6)
     }
 
     // MARK: - State
@@ -454,36 +591,41 @@ struct TrackRoadmapView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Text("Modules")
-                    .font(.system(size: 12, weight: .semibold))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Modules")
+                        .font(.system(size: 13, weight: .semibold))
+                    Text("Ordered steps inside this track")
+                        .font(.system(size: 11))
+                        .foregroundStyle(SymphoTheme.tertiaryText)
+                }
+
                 Spacer()
+
                 Button {
                     cancelComposer()
                     addingModule = true
                 } label: {
                     Image(systemName: "plus")
                         .font(.system(size: 12, weight: .semibold))
+                        .frame(width: 28, height: 28)
                 }
-                .buttonStyle(.plain)
-                .foregroundStyle(SymphoTheme.secondaryText)
+                .buttonStyle(.glass)
+                .buttonBorderShape(.circle)
             }
 
             if modules.isEmpty && !addingModule {
                 Text("Add modules for this track.")
                     .font(.system(size: 12))
                     .foregroundStyle(SymphoTheme.secondaryText)
+                    .padding(14)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(SymphoTheme.elevatedCanvas.opacity(0.5), in: .rect(cornerRadius: 14))
             } else {
-                VStack(spacing: 0) {
+                VStack(spacing: 8) {
                     ForEach(modules) { module in
-                        Button { onSelectModule(module) } label: {
-                            Text(module.title)
-                                .font(.system(size: 13, weight: .medium))
-                                .foregroundStyle(SymphoTheme.primaryText)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(.vertical, 9)
-                                .contentShape(Rectangle())
+                        RoadmapModuleBlock(module: module) {
+                            onSelectModule(module)
                         }
-                        .buttonStyle(.plain)
                         .contextMenu {
                             Button("Edit", systemImage: "pencil") { editTarget = .module(module) }
                             Button("Delete", role: .destructive) { softDeleteModule(module) }
@@ -504,28 +646,17 @@ struct TrackRoadmapView: View {
                             )
                         )
                         #endif
-
-                        if module.id != modules.last?.id {
-                            Rectangle()
-                                .fill(SymphoTheme.dividerColor.opacity(0.65))
-                                .frame(height: 1)
-                        }
                     }
                 }
             }
 
             if addingModule {
-                HStack(spacing: 8) {
-                    TextField("Module name", text: $draftTitle)
-                        .textFieldStyle(.plain)
-                        .onSubmit(saveNewModule)
-                    Button("Add", action: saveNewModule)
-                        .font(.system(size: 11, weight: .semibold))
-                        .buttonStyle(.plain)
-                    Button("Cancel", action: cancelComposer)
-                        .font(.system(size: 11))
-                        .buttonStyle(.plain)
-                }
+                RoadmapInlineComposer(
+                    placeholder: "Module name",
+                    draftTitle: $draftTitle,
+                    onSave: saveNewModule,
+                    onCancel: cancelComposer
+                )
             }
         }
         .sheet(item: $editTarget) { target in

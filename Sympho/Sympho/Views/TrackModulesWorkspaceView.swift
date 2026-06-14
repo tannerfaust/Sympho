@@ -22,6 +22,8 @@ struct TrackModulesWorkspaceView: View {
     @State private var viewMode: TrackModulesViewMode = .gallery
     @State private var draggedModuleID: UUID?
     @State private var editModuleTarget: Module?
+    @State private var showInlineAddModule = false
+    @State private var newModuleTitle = ""
 
     private var modules: [Module] {
         track.activeModules
@@ -39,13 +41,26 @@ struct TrackModulesWorkspaceView: View {
 
                 Spacer(minLength: 0)
 
-                Text("\(modules.count) module\(modules.count == 1 ? "" : "s")")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(SymphoTheme.tertiaryText)
+                Button {
+                    withAnimation(.snappy(duration: 0.15)) {
+                        showInlineAddModule.toggle()
+                    }
+                } label: {
+                    Image(systemName: "plus")
+                        .font(.system(size: 17, weight: .semibold))
+                        .frame(width: 34, height: 34)
+                }
+                .buttonStyle(.glass)
+                .buttonBorderShape(.circle)
+                .help("Add module")
+            }
+
+            if showInlineAddModule {
+                inlineAddField
             }
 
             if modules.isEmpty {
-                Text("No modules in this track yet. Use Roadmap to add and reorder.")
+                Text("No modules in this track yet. Tap + to add one.")
                     .font(.system(size: 12))
                     .foregroundStyle(SymphoTheme.secondaryText)
             } else {
@@ -62,6 +77,47 @@ struct TrackModulesWorkspaceView: View {
                 editModuleTarget = nil
             }
         }
+    }
+
+    private var inlineAddField: some View {
+        HStack(spacing: 8) {
+            TextField("Module title…", text: $newModuleTitle, onCommit: saveNewModule)
+                .textFieldStyle(.plain)
+                .padding(.horizontal, 11)
+                .frame(height: 38)
+                .background {
+                    RoundedRectangle(cornerRadius: 11, style: .continuous)
+                        .fill(SymphoTheme.elevatedCanvas.opacity(0.58))
+                }
+                .overlay {
+                    RoundedRectangle(cornerRadius: 11, style: .continuous)
+                        .stroke(SymphoTheme.dividerColor, lineWidth: 1)
+                }
+
+            Button("Add", action: saveNewModule)
+                .buttonStyle(SymphoPrimaryButtonStyle())
+        }
+        .transition(.opacity)
+    }
+
+    private func saveNewModule() {
+        let title = newModuleTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !title.isEmpty else { return }
+
+        let nextIndex = modules.map(\.sortIndex).max().map { $0 + 1 } ?? 0
+        let newModule = Module(title: title, desc: "", sortIndex: nextIndex, track: track)
+        modelContext.insert(newModule)
+        track.modules.append(newModule)
+        track.updatedAt = Date()
+        track.isSynced = false
+        if let domain = track.domain {
+            domain.updatedAt = Date()
+            domain.isSynced = false
+        }
+        try? modelContext.save()
+
+        newModuleTitle = ""
+        showInlineAddModule = false
     }
 
     private func modeButton(_ title: String, _ mode: TrackModulesViewMode, _ icon: String) -> some View {
