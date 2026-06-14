@@ -2,7 +2,7 @@
 
 # Technical Architecture & Stack Overview
 
-**Core Objective:** Build a highly efficient, modular, and logically understandable architecture for Version 1.0. The system must support complex data nesting while remaining exceptionally fast, ensuring zero latency during data entry to protect the user's flow state.
+**Core Objective:** Build a highly efficient, modular, and logically understandable architecture. The system must support complex data nesting while remaining exceptionally fast, ensuring zero latency during data entry to protect the user's flow state.
 
 ### Technology Stack Requirements
 
