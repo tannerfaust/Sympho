@@ -7,6 +7,7 @@
 
 import Foundation
 import SwiftData
+import SwiftUI
 
 // MARK: - Enums for Statuses and Types
 
@@ -130,6 +131,97 @@ enum ResourceType: String, Codable, CaseIterable, Identifiable {
         case .url: return "Web URL"
         case .video: return "Video Tutorial"
         case .note: return "Plain Note"
+        }
+    }
+}
+
+enum CaptureIntent: String, Codable, CaseIterable, Identifiable {
+    case planInbox = "plan_inbox"
+    case learningMaterial = "learning_material"
+    case learningNode = "learning_node"
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .planInbox: return "Plan Inbox"
+        case .learningMaterial: return "Learning Material"
+        case .learningNode: return "Learning Node"
+        }
+    }
+
+    var shortName: String {
+        switch self {
+        case .planInbox: return "Inbox"
+        case .learningMaterial: return "Material"
+        case .learningNode: return "Node"
+        }
+    }
+
+    var iconName: String {
+        switch self {
+        case .planInbox: return "tray"
+        case .learningMaterial: return "doc.on.doc"
+        case .learningNode: return "circle.hexagonpath"
+        }
+    }
+
+    var placeholder: String {
+        switch self {
+        case .planInbox:
+            return "Dump a note, link, or file — no sorting needed now..."
+        case .learningMaterial:
+            return "Paste a link, attach a file, or jot notes for what you're learning..."
+        case .learningNode:
+            return "Name the topic you want to learn, then add materials if you have them..."
+        }
+    }
+
+    var headerTitle: String {
+        switch self {
+        case .planInbox: return "Inbox Capture"
+        case .learningMaterial: return "Learning Material"
+        case .learningNode: return "Learning Node"
+        }
+    }
+
+    var headerSubtitle: String {
+        switch self {
+        case .planInbox:
+            return "Unassigned input — deal with it later"
+        case .learningMaterial:
+            return "Resources for something you're learning"
+        case .learningNode:
+            return "A topic you want to study"
+        }
+    }
+
+    var showsDestinationPicker: Bool {
+        switch self {
+        case .planInbox: return false
+        case .learningMaterial, .learningNode: return true
+        }
+    }
+
+    var pillForeground: Color {
+        switch self {
+        case .planInbox:
+            return Color(red: 0.58, green: 0.44, blue: 0.08)
+        case .learningMaterial:
+            return Color(red: 0.10, green: 0.44, blue: 0.78)
+        case .learningNode:
+            return Color(red: 0.14, green: 0.52, blue: 0.36)
+        }
+    }
+
+    var pillBackground: Color {
+        switch self {
+        case .planInbox:
+            return Color(red: 0.98, green: 0.93, blue: 0.76)
+        case .learningMaterial:
+            return Color(red: 0.90, green: 0.95, blue: 1.0)
+        case .learningNode:
+            return Color(red: 0.90, green: 0.97, blue: 0.92)
         }
     }
 }
@@ -374,6 +466,35 @@ final class Module: Identifiable {
         self.isDeletedLocally = false
         self.lastSyncedAt = nil
     }
+
+    var activeNodes: [Node] {
+        nodes
+            .filter { !$0.isDeletedLocally }
+            .sorted { lhs, rhs in
+                if lhs.sortIndex != rhs.sortIndex { return lhs.sortIndex < rhs.sortIndex }
+                return lhs.createdAt < rhs.createdAt
+            }
+    }
+
+    var allResources: [Resource] {
+        var result = Set<Resource>()
+        for node in activeNodes {
+            for res in node.resources where !res.isDeletedLocally {
+                result.insert(res)
+            }
+        }
+        return Array(result).sorted { $0.createdAt > $1.createdAt }
+    }
+
+    var progress: Double {
+        guard !activeNodes.isEmpty else { return 0 }
+        let mastered = activeNodes.filter { $0.status == .mastered }.count
+        return Double(mastered) / Double(activeNodes.count)
+    }
+
+    var resolvedDomain: Domain? {
+        domain ?? track?.domain
+    }
 }
 
 @Model
@@ -427,6 +548,7 @@ final class Node: Identifiable {
     var statusValue: String
     var priorityValue: String
     var isOrphan: Bool
+    var captureIntentValue: String = CaptureIntent.planInbox.rawValue
     var masteredAt: Date?
     var createdAt: Date
     var updatedAt: Date
@@ -457,8 +579,24 @@ final class Node: Identifiable {
         get { NodePriority(rawValue: priorityValue) ?? .normal }
         set { priorityValue = newValue.rawValue }
     }
+
+    var captureIntent: CaptureIntent {
+        get { CaptureIntent(rawValue: captureIntentValue) ?? .planInbox }
+        set { captureIntentValue = newValue.rawValue }
+    }
     
-    init(id: UUID = UUID(), title: String, desc: String = "", sortIndex: Int = 0, status: NodeStatus = .backlog, priority: NodePriority = .normal, isOrphan: Bool = false, module: Module? = nil, project: Project? = nil) {
+    init(
+        id: UUID = UUID(),
+        title: String,
+        desc: String = "",
+        sortIndex: Int = 0,
+        status: NodeStatus = .backlog,
+        priority: NodePriority = .normal,
+        isOrphan: Bool = false,
+        captureIntent: CaptureIntent = .planInbox,
+        module: Module? = nil,
+        project: Project? = nil
+    ) {
         self.id = id
         self.title = title
         self.desc = desc
@@ -466,6 +604,7 @@ final class Node: Identifiable {
         self.statusValue = status.rawValue
         self.priorityValue = priority.rawValue
         self.isOrphan = isOrphan
+        self.captureIntentValue = captureIntent.rawValue
         self.module = module
         self.project = project
         self.createdAt = Date()
@@ -801,5 +940,117 @@ final class LibraryAttachment: Identifiable {
         self.contentType = contentType
         self.createdAt = Date()
         self.resource = resource
+    }
+}
+
+enum DevCaptureKind: String, Codable, CaseIterable, Identifiable {
+    case bug
+    case bigIdea
+    case moduleIdea
+    case designIdea
+    case improvement
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .bug: return "Bug"
+        case .bigIdea: return "Big Idea"
+        case .moduleIdea: return "Module Idea"
+        case .designIdea: return "Design Idea"
+        case .improvement: return "Improvement"
+        }
+    }
+
+    var iconName: String {
+        switch self {
+        case .bug: return "ladybug"
+        case .bigIdea: return "lightbulb.max"
+        case .moduleIdea: return "square.stack.3d.up"
+        case .designIdea: return "paintbrush"
+        case .improvement: return "wrench.and.screwdriver"
+        }
+    }
+}
+
+enum DevCaptureAssignee: String, Codable, CaseIterable, Identifiable {
+    case claude
+    case gemini
+    case cursor
+    case copilot
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .claude: return "Claude"
+        case .gemini: return "Gemini"
+        case .cursor: return "Cursor"
+        case .copilot: return "Copilot"
+        }
+    }
+}
+
+@Model
+final class DevCapture: Identifiable {
+    @Attribute(.unique) var id: UUID
+    var title: String
+    var bodyText: String
+    var kindValue: String
+    var assigneeValue: String
+    var contextSummary: String
+    var contextSection: String
+    var contextDomainTitle: String?
+    var contextTrackTitle: String?
+    var contextModuleTitle: String?
+    var contextNodeTitle: String?
+    var contextProjectTitle: String?
+    var createdAt: Date
+    var updatedAt: Date
+    var isSynced: Bool
+    var isDeletedLocally: Bool
+    var lastSyncedAt: Date?
+
+    var kind: DevCaptureKind {
+        get { DevCaptureKind(rawValue: kindValue) ?? .improvement }
+        set { kindValue = newValue.rawValue }
+    }
+
+    var assignee: DevCaptureAssignee {
+        get { DevCaptureAssignee(rawValue: assigneeValue) ?? .cursor }
+        set { assigneeValue = newValue.rawValue }
+    }
+
+    init(
+        id: UUID = UUID(),
+        title: String,
+        bodyText: String = "",
+        kind: DevCaptureKind,
+        assignee: DevCaptureAssignee,
+        contextSummary: String,
+        contextSection: String,
+        contextDomainTitle: String? = nil,
+        contextTrackTitle: String? = nil,
+        contextModuleTitle: String? = nil,
+        contextNodeTitle: String? = nil,
+        contextProjectTitle: String? = nil
+    ) {
+        self.id = id
+        self.title = title
+        self.bodyText = bodyText
+        self.kindValue = kind.rawValue
+        self.assigneeValue = assignee.rawValue
+        self.contextSummary = contextSummary
+        self.contextSection = contextSection
+        self.contextDomainTitle = contextDomainTitle
+        self.contextTrackTitle = contextTrackTitle
+        self.contextModuleTitle = contextModuleTitle
+        self.contextNodeTitle = contextNodeTitle
+        self.contextProjectTitle = contextProjectTitle
+        self.createdAt = Date()
+        self.updatedAt = Date()
+        self.isSynced = false
+        self.isDeletedLocally = false
+        self.lastSyncedAt = nil
     }
 }

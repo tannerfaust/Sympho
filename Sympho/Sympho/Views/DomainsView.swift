@@ -11,6 +11,7 @@ import UniformTypeIdentifiers
 
 struct DomainsView: View {
     @Environment(\.modelContext) private var modelContext
+    @Environment(AppNavigationContext.self) private var navigationContext
     
     @Query(
         filter: #Predicate<Domain> { !$0.isArchived && !$0.isDeletedLocally },
@@ -75,7 +76,25 @@ struct DomainsView: View {
             selectedModule = nil
             selectedNode = nil
             selectedProject = nil
+            syncNavigationContext()
         }
+        .onChange(of: selectedTrack?.id) { _, _ in syncNavigationContext() }
+        .onChange(of: selectedModule?.id) { _, _ in syncNavigationContext() }
+        .onChange(of: selectedNode?.id) { _, _ in syncNavigationContext() }
+        .onChange(of: selectedProject?.id) { _, _ in syncNavigationContext() }
+        .onAppear {
+            syncNavigationContext()
+        }
+    }
+
+    private func syncNavigationContext() {
+        navigationContext.updateDomainWorkspace(
+            domain: selectedDomain,
+            track: selectedTrack,
+            module: selectedModule,
+            node: selectedNode,
+            project: selectedProject
+        )
     }
     
     // MARK: - Domains Grid List
@@ -882,6 +901,11 @@ struct DomainDetailView: View {
     private var nodesContent: some View {
         VStack(alignment: .leading, spacing: 14) {
             sectionHeader(title: "Nodes", showsAdd: false, addAction: {})
+
+            LiquidGlassPromptBanner(
+                domain: domain,
+                onNodeCreated: { onSelectNode($0) }
+            )
 
             DomainNodesWorkspaceView(
                 domain: domain,

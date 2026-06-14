@@ -10,6 +10,7 @@ import AppKit
 #endif
 
 struct SettingsView: View {
+    @AppStorage("devCaptureEnabled") private var devCaptureEnabled = DevCaptureSettings.isEnabled
     @State private var showsWorkspacePicker = false
     @State private var workspaceName = LibraryStorage.workspaceName
     @State private var repositoryInfo = LibraryStorage.repositoryInfo
@@ -19,6 +20,7 @@ struct SettingsView: View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 22) {
                 header
+                developerSection
                 libraryStorageSection
                 gitSection
             }
@@ -62,6 +64,22 @@ struct SettingsView: View {
 
             Text("Storage and versioning for your Sympho workspace.")
                 .metadataSans()
+        }
+    }
+
+    private var developerSection: some View {
+        SettingsSection(title: "Developer", iconName: "hammer.fill") {
+            VStack(alignment: .leading, spacing: 10) {
+                Toggle("Developer capture", isOn: $devCaptureEnabled)
+                    .toggleStyle(.switch)
+                    .onChange(of: devCaptureEnabled) { _, newValue in
+                        DevCaptureSettings.isEnabled = newValue
+                    }
+
+                Text("Shows a Dev Capture button above Capture. Log bugs, ideas, and design notes with automatic context from where you are in Sympho.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(SymphoTheme.secondaryText)
+            }
         }
     }
 

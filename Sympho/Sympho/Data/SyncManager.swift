@@ -17,6 +17,8 @@ final class SyncManager {
     var isSyncing: Bool = false
     var lastSyncedDate: Date? = nil
     var syncLogs: [String] = []
+
+    private let hasConfiguredRemoteBackend = false
     
     private init() {}
     
@@ -41,8 +43,12 @@ final class SyncManager {
             // 3. Pull Remote Changes
             try await pullRemoteChanges(context: modelContext)
             
-            lastSyncedDate = Date()
-            log("Sync complete. All local modifications successfully merged.")
+            if hasConfiguredRemoteBackend {
+                lastSyncedDate = Date()
+                log("Sync complete. All local modifications successfully merged.")
+            } else {
+                log("Local-first store is up to date. Remote sync is not configured yet.")
+            }
         } catch {
             log("Sync failed: \(error.localizedDescription)")
         }
@@ -61,6 +67,7 @@ final class SyncManager {
         let nodesFetch = FetchDescriptor<Node>(predicate: #Predicate { $0.isDeletedLocally })
         let resourcesFetch = FetchDescriptor<Resource>(predicate: #Predicate { $0.isDeletedLocally })
         let projectsFetch = FetchDescriptor<Project>(predicate: #Predicate { $0.isDeletedLocally })
+        let readingItemsFetch = FetchDescriptor<ReadingListItem>(predicate: #Predicate { $0.isDeletedLocally })
         
         let deletedDomains = try context.fetch(domainsFetch)
         let deletedTracks = try context.fetch(tracksFetch)
@@ -68,10 +75,16 @@ final class SyncManager {
         let deletedNodes = try context.fetch(nodesFetch)
         let deletedResources = try context.fetch(resourcesFetch)
         let deletedProjects = try context.fetch(projectsFetch)
+        let deletedReadingItems = try context.fetch(readingItemsFetch)
         
-        let totalSoftDeletes = deletedDomains.count + deletedTracks.count + deletedModules.count + deletedNodes.count + deletedResources.count + deletedProjects.count
+        let totalSoftDeletes = deletedDomains.count + deletedTracks.count + deletedModules.count + deletedNodes.count + deletedResources.count + deletedProjects.count + deletedReadingItems.count
         
         if totalSoftDeletes > 0 {
+            guard hasConfiguredRemoteBackend else {
+                log("Found \(totalSoftDeletes) local tombstones. Keeping them locally until Supabase is configured.")
+                return
+            }
+
             log("Found \(totalSoftDeletes) soft-deleted records. Syncing to Supabase via DELETE API...")
             
             // In Production: 
@@ -85,6 +98,7 @@ final class SyncManager {
             for item in deletedNodes { context.delete(item) }
             for item in deletedResources { context.delete(item) }
             for item in deletedProjects { context.delete(item) }
+            for item in deletedReadingItems { context.delete(item) }
             
             try context.save()
             log("Purged \(totalSoftDeletes) soft-deleted records from client store.")
@@ -104,6 +118,7 @@ final class SyncManager {
         let nodesFetch = FetchDescriptor<Node>(predicate: #Predicate { !$0.isSynced && !$0.isDeletedLocally })
         let resourcesFetch = FetchDescriptor<Resource>(predicate: #Predicate { !$0.isSynced && !$0.isDeletedLocally })
         let projectsFetch = FetchDescriptor<Project>(predicate: #Predicate { !$0.isSynced && !$0.isDeletedLocally })
+        let readingItemsFetch = FetchDescriptor<ReadingListItem>(predicate: #Predicate { !$0.isSynced && !$0.isDeletedLocally })
         
         let unsyncedDomains = try context.fetch(domainsFetch)
         let unsyncedTracks = try context.fetch(tracksFetch)
@@ -111,10 +126,16 @@ final class SyncManager {
         let unsyncedNodes = try context.fetch(nodesFetch)
         let unsyncedResources = try context.fetch(resourcesFetch)
         let unsyncedProjects = try context.fetch(projectsFetch)
+        let unsyncedReadingItems = try context.fetch(readingItemsFetch)
         
-        let totalUnsynced = unsyncedDomains.count + unsyncedTracks.count + unsyncedModules.count + unsyncedNodes.count + unsyncedResources.count + unsyncedProjects.count
+        let totalUnsynced = unsyncedDomains.count + unsyncedTracks.count + unsyncedModules.count + unsyncedNodes.count + unsyncedResources.count + unsyncedProjects.count + unsyncedReadingItems.count
         
         if totalUnsynced > 0 {
+            guard hasConfiguredRemoteBackend else {
+                log("Found \(totalUnsynced) local changes. Keeping them marked pending until Supabase is configured.")
+                return
+            }
+
             log("Syncing \(totalUnsynced) additions/modifications to Supabase...")
             
             // In Production:
@@ -128,6 +149,7 @@ final class SyncManager {
             for item in unsyncedNodes { item.isSynced = true; item.lastSyncedAt = Date() }
             for item in unsyncedResources { item.isSynced = true; item.lastSyncedAt = Date() }
             for item in unsyncedProjects { item.isSynced = true; item.lastSyncedAt = Date() }
+            for item in unsyncedReadingItems { item.isSynced = true; item.lastSyncedAt = Date() }
             
             try context.save()
             log("Successfully updated \(totalUnsynced) records in cloud and marked synced on client.")

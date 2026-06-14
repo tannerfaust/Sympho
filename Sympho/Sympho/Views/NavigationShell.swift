@@ -70,10 +70,13 @@ enum NavSection: String, CaseIterable, Identifiable {
 
 struct NavigationShell: View {
     @Environment(\.modelContext) private var modelContext
+    @Environment(AppNavigationContext.self) private var navigationContext
+    @AppStorage("devCaptureEnabled") private var devCaptureEnabled = DevCaptureSettings.isEnabled
     @State private var selectedSection: NavSection = .dashboard
     @State private var selectedDomain: Domain?
     @State private var isDomainsExpanded = false
     @State private var showQuickCapture = false
+    @State private var showDevCapture = false
     @State private var isShowingSettings = false
 
     @Query(
@@ -85,11 +88,34 @@ struct NavigationShell: View {
     var syncManager = SyncManager.shared
 
     var body: some View {
-        #if os(macOS)
-        macOSLayout
-        #else
-        iOSLayout
-        #endif
+        Group {
+            #if os(macOS)
+            macOSLayout
+            #else
+            iOSLayout
+            #endif
+        }
+        .sheet(isPresented: $showQuickCapture) {
+            QuickCaptureOverlay(isPresented: $showQuickCapture)
+        }
+        .sheet(isPresented: $showDevCapture) {
+            DevCaptureOverlay(isPresented: $showDevCapture)
+        }
+        .onAppear {
+            syncNavigationContext()
+        }
+        .onChange(of: selectedSection) { _, _ in
+            syncNavigationContext()
+        }
+        .onChange(of: selectedDomain?.id) { _, _ in
+            syncNavigationContext()
+        }
+        .onChange(of: isShowingSettings) { _, _ in
+            syncNavigationContext()
+        }
+        .task {
+            normalizeDomainOrderIfNeeded()
+        }
     }
 
     // MARK: - macOS
@@ -107,12 +133,6 @@ struct NavigationShell: View {
             detailContainer
         }
         .navigationSplitViewStyle(.balanced)
-        .sheet(isPresented: $showQuickCapture) {
-            QuickCaptureOverlay(isPresented: $showQuickCapture)
-        }
-        .task {
-            normalizeDomainOrderIfNeeded()
-        }
     }
 
     private var sidebar: some View {
@@ -223,6 +243,25 @@ struct NavigationShell: View {
         VStack(alignment: .leading, spacing: 12) {
             MinimalDivider()
 
+            if devCaptureEnabled {
+                Button {
+                    showDevCapture = true
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "hammer.fill")
+                        Text("Dev Capture")
+                        Spacer()
+                        Text("⌘⇧K")
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(SymphoTheme.secondaryText)
+                    }
+                    .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(SymphoSecondaryButtonStyle())
+                .keyboardShortcut("k", modifiers: [.command, .shift])
+                .help("Developer capture for bugs and ideas")
+            }
+
             Button {
                 showQuickCapture.toggle()
             } label: {
@@ -313,12 +352,6 @@ struct NavigationShell: View {
                 .tag(NavSection.library)
         }
         .tint(SymphoTheme.colorActive)
-        .sheet(isPresented: $showQuickCapture) {
-            QuickCaptureOverlay(isPresented: $showQuickCapture)
-        }
-        .task {
-            normalizeDomainOrderIfNeeded()
-        }
     }
     #endif
 
@@ -357,6 +390,14 @@ struct NavigationShell: View {
             isDomainsExpanded = true
             #endif
         }
+    }
+
+    private func syncNavigationContext() {
+        navigationContext.updateShell(
+            section: selectedSection,
+            domain: selectedDomain,
+            isSettings: isShowingSettings
+        )
     }
 
     private func normalizeDomainOrderIfNeeded() {

@@ -10,6 +10,7 @@ import SwiftData
 
 struct ProjectsView: View {
     @Environment(\.modelContext) private var modelContext
+    @Environment(AppNavigationContext.self) private var navigationContext
 
     @Query(filter: #Predicate<Project> { !$0.isDeletedLocally }, sort: \Project.updatedAt, order: .reverse)
     private var projects: [Project]
@@ -25,13 +26,21 @@ struct ProjectsView: View {
     @State private var showsCompactTitle = false
 
     var body: some View {
-        if let selectedProject {
-            ProjectDetailView(project: selectedProject) {
-                self.selectedProject = nil
+        Group {
+            if let selectedProject {
+                ProjectDetailView(project: selectedProject) {
+                    self.selectedProject = nil
+                }
+            } else {
+                projectsOverview
             }
-        } else {
-            projectsOverview
         }
+        .onAppear { syncNavigationContext() }
+        .onChange(of: selectedProject?.id) { _, _ in syncNavigationContext() }
+    }
+
+    private func syncNavigationContext() {
+        navigationContext.updateProjectsWorkspace(project: selectedProject)
     }
 
     private var projectsOverview: some View {
