@@ -47,6 +47,14 @@ struct SymphoApp: App {
             rootContent
         }
         .windowStyle(.hiddenTitleBar)
+        .commands {
+            CommandGroup(after: .textEditing) {
+                Button("Search Sympho") {
+                    NotificationCenter.default.post(name: .showGlobalSearch, object: nil)
+                }
+                .keyboardShortcut("f", modifiers: [.command])
+            }
+        }
 
         MenuBarExtra {
             MenuBarCaptureMenu()

@@ -42,6 +42,8 @@ private struct FilterUpdateTrigger: Equatable {
 }
 
 struct LibraryView: View {
+    var initialSearchText: String = ""
+
     @Query(filter: #Predicate<Resource> { !$0.isDeletedLocally }, sort: \Resource.updatedAt, order: .reverse)
     private var entries: [Resource]
 
@@ -158,6 +160,15 @@ struct LibraryView: View {
             projectsCount: projects.count
         )) {
             updateFilteredEntries()
+        }
+        .onAppear {
+            if !initialSearchText.isEmpty {
+                searchText = initialSearchText
+            }
+        }
+        .onChange(of: initialSearchText) { _, newValue in
+            guard !newValue.isEmpty else { return }
+            searchText = newValue
         }
     }
 
@@ -430,7 +441,8 @@ struct LibraryView: View {
                 $0.title.lowercased().contains(query) ||
                 $0.bodyText.lowercased().contains(query) ||
                 $0.urlString.lowercased().contains(query) ||
-                $0.attachments.contains { $0.displayName.lowercased().contains(query) }
+                $0.attachments.contains { $0.displayName.lowercased().contains(query) } ||
+                $0.tags.contains { $0.name.lowercased().contains(query) }
 
             guard matchesSearch else { return false }
 

@@ -81,6 +81,9 @@ struct NavigationShell: View {
     @State private var expandedTrackIDs: Set<UUID> = []
     @State private var showQuickCapture = false
     @State private var showDevCapture = false
+    @State private var showGlobalSearch = false
+    @State private var selectedSearchNode: Node?
+    @State private var librarySearchText = ""
     @State private var isShowingSettings = false
 
     @Query(
@@ -105,6 +108,22 @@ struct NavigationShell: View {
         .sheet(isPresented: $showDevCapture) {
             DevCaptureOverlay(isPresented: $showDevCapture)
         }
+        #if os(macOS)
+        .sheet(isPresented: $showGlobalSearch) {
+            GlobalSearchView(
+                onOpenNode: openSearchNode,
+                onOpenTag: { openLibrarySearch($0.name) },
+                onOpenDomain: openDomain,
+                onOpenTrack: openTrack,
+                onOpenModule: openModule,
+                onOpenProject: openProject,
+                onOpenResource: { openLibrarySearch($0.title) }
+            )
+        }
+        .sheet(item: $selectedSearchNode) { node in
+            NodeDetailSheet(node: node)
+        }
+        #endif
         .onAppear {
             syncNavigationContext()
         }
@@ -117,6 +136,11 @@ struct NavigationShell: View {
         .onChange(of: isShowingSettings) { _, _ in
             syncNavigationContext()
         }
+        #if os(macOS)
+        .onReceive(NotificationCenter.default.publisher(for: .showGlobalSearch)) { _ in
+            showGlobalSearch = true
+        }
+        #endif
         .task {
             normalizeDomainOrderIfNeeded()
         }
@@ -381,24 +405,31 @@ struct NavigationShell: View {
                 Spacer()
             }
 
-            HStack(spacing: 8) {
-                Image(systemName: "magnifyingglass")
-                    .foregroundStyle(SymphoTheme.tertiaryText)
-                    .font(.system(size: 13, weight: .medium))
+            Button {
+                showGlobalSearch = true
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "magnifyingglass")
+                        .foregroundStyle(SymphoTheme.tertiaryText)
+                        .font(.system(size: 13, weight: .medium))
 
-                Text("Search everything")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(SymphoTheme.tertiaryText)
+                    Text("Search everything")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(SymphoTheme.tertiaryText)
 
-                Spacer()
+                    Spacer()
 
-                Text("⌘F")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(SymphoTheme.tertiaryText)
+                    Text("⌘F")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(SymphoTheme.tertiaryText)
+                }
+                .padding(.horizontal, 11)
+                .frame(height: 34)
+                .contentShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
             }
-            .padding(.horizontal, 11)
-            .frame(height: 34)
+            .buttonStyle(.plain)
             .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 11))
+            .help("Search all of Sympho")
         }
         .padding(.horizontal, 18)
         .padding(.top, 12)
@@ -554,7 +585,7 @@ struct NavigationShell: View {
             case .planner:
                 PlannerView()
             case .library:
-                LibraryView()
+                LibraryView(initialSearchText: librarySearchText)
             }
         }
     }
@@ -569,6 +600,26 @@ struct NavigationShell: View {
             isShowingSettings = false
         }
     }
+
+    #if os(macOS)
+    private func openSearchNode(_ node: Node) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+            selectedSearchNode = node
+        }
+    }
+
+    private func openLibrarySearch(_ searchText: String) {
+        withAnimation(.snappy(duration: 0.18)) {
+            librarySearchText = searchText
+            selectedSection = .library
+            selectedDomain = nil
+            selectedTrack = nil
+            selectedModule = nil
+            selectedProject = nil
+            isShowingSettings = false
+        }
+    }
+    #endif
 
     private func openDomainsRoot() {
         withAnimation(.snappy(duration: 0.18)) {
