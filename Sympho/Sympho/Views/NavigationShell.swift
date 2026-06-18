@@ -74,7 +74,11 @@ struct NavigationShell: View {
     @AppStorage("devCaptureEnabled") private var devCaptureEnabled = DevCaptureSettings.isEnabled
     @State private var selectedSection: NavSection = .dashboard
     @State private var selectedDomain: Domain?
-    @State private var isDomainsExpanded = false
+    @State private var selectedTrack: Track?
+    @State private var selectedModule: Module?
+    @State private var selectedProject: Project?
+    @State private var expandedDomainIDs: Set<UUID> = []
+    @State private var expandedTrackIDs: Set<UUID> = []
     @State private var showQuickCapture = false
     @State private var showDevCapture = false
     @State private var isShowingSettings = false
@@ -139,31 +143,27 @@ struct NavigationShell: View {
         VStack(alignment: .leading, spacing: 0) {
             sidebarHeader
 
-            VStack(alignment: .leading, spacing: 8) {
-                VStack(spacing: 3) {
-                    ForEach(NavSection.allCases) { section in
-                        if section == .domains {
-                            domainsSidebarGroup
-                        } else {
-                            SidebarRow(
-                                section: section,
-                                isSelected: selectedSection == section
-                            ) {
-                                withAnimation(.snappy(duration: 0.18)) {
-                                    selectedSection = section
-                                    selectedDomain = nil
-                                    isShowingSettings = false
-                                }
-                            }
-                            .keyboardShortcut(section.shortcut, modifiers: [.command])
-                        }
-                    }
-                }
-            }
-            .padding(.horizontal, 10)
-            .padding(.top, 10)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 2) {
+                    navRow(.dashboard)
+                    navRow(.inbox)
 
-            Spacer(minLength: 18)
+                    domainsTreeSection
+
+                    MinimalDivider()
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 8)
+
+                    navRow(.projects)
+                    navRow(.readingList)
+                    navRow(.planner)
+                    navRow(.library)
+                }
+                .padding(.horizontal, 10)
+                .padding(.top, 8)
+                .padding(.bottom, 14)
+            }
+            .scrollIndicators(.never)
 
             sidebarFooter
         }
@@ -171,36 +171,202 @@ struct NavigationShell: View {
         .background(.thinMaterial)
     }
 
-    private var domainsSidebarGroup: some View {
-        VStack(spacing: 2) {
-            DomainsSidebarGroupRow(
-                isSelected: selectedSection == .domains && selectedDomain == nil,
-                isExpanded: isDomainsExpanded,
-                onSelect: {
-                    withAnimation(.snappy(duration: 0.18)) {
-                        selectedSection = .domains
-                        selectedDomain = nil
-                        isDomainsExpanded = true
-                        isShowingSettings = false
-                    }
-                },
-                onToggle: {
-                    withAnimation(.snappy(duration: 0.18)) {
-                        isDomainsExpanded.toggle()
-                    }
-                }
+    private func navRow(_ section: NavSection) -> some View {
+        SidebarRow(
+            section: section,
+            isSelected: isSectionSelected(section)
+        ) {
+            selectSection(section)
+        }
+        .keyboardShortcut(section.shortcut, modifiers: [.command])
+    }
+
+    // MARK: - Domains tree
+
+    private var domainsTreeSection: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            SidebarSectionHeader(
+                title: "Domains",
+                isSelected: selectedSection == .domains && selectedDomain == nil && !isShowingSettings,
+                onSelect: openDomainsRoot,
+                onAdd: openDomainsRoot
             )
             .keyboardShortcut("3", modifiers: [.command])
 
-            if isDomainsExpanded {
-                ForEach(domains) { domain in
-                    DomainSidebarRow(
-                        domain: domain,
-                        isSelected: selectedSection == .domains && selectedDomain?.id == domain.id
-                    ) {
-                        openDomain(domain)
-                    }
-                }
+            ForEach(domains) { domain in
+                domainTreeItem(domain)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func domainTreeItem(_ domain: Domain) -> some View {
+        let isExpanded = expandedDomainIDs.contains(domain.id)
+
+        SidebarTreeRow(
+            title: domain.title,
+            icon: DomainIcon.validated(domain.iconName),
+            indent: 0,
+            isSelected: isDomainSelected(domain),
+            trailing: domainProgressLabel(domain),
+            hasDisclosure: domainHasChildren(domain),
+            isExpanded: isExpanded,
+            titleWeight: .medium,
+            onToggle: { toggleDomain(domain) },
+            onSelect: { openDomain(domain) }
+        )
+
+        if isExpanded {
+            ForEach(activeTracks(in: domain)) { track in
+                trackTreeItem(track)
+            }
+            ForEach(standaloneModules(in: domain)) { module in
+                moduleTreeRow(module, indent: 1)
+            }
+            ForEach(activeProjects(in: domain)) { project in
+                projectTreeRow(project, indent: 1)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func trackTreeItem(_ track: Track) -> some View {
+        let modules = track.activeModules
+        let isExpanded = expandedTrackIDs.contains(track.id)
+
+        SidebarTreeRow(
+            title: track.title,
+            icon: "point.topleft.down.curvedto.point.bottomright.up",
+            indent: 1,
+            isSelected: isTrackSelected(track),
+            trailing: nil,
+            hasDisclosure: !modules.isEmpty,
+            isExpanded: isExpanded,
+            onToggle: { toggleTrack(track) },
+            onSelect: { openTrack(track) }
+        )
+
+        if isExpanded {
+            ForEach(modules) { module in
+                moduleTreeRow(module, indent: 2)
+            }
+        }
+    }
+
+    private func moduleTreeRow(_ module: Module, indent: Int) -> some View {
+        SidebarTreeRow(
+            title: module.title,
+            icon: "square.stack.3d.up",
+            indent: indent,
+            isSelected: isModuleSelected(module),
+            trailing: moduleNodeLabel(module),
+            onSelect: { openModule(module) }
+        )
+    }
+
+    private func projectTreeRow(_ project: Project, indent: Int) -> some View {
+        SidebarTreeRow(
+            title: project.title,
+            icon: "folder",
+            indent: indent,
+            isSelected: isProjectSelected(project),
+            trailing: nil,
+            onSelect: { openProject(project) }
+        )
+    }
+
+    // MARK: - Tree data helpers
+
+    private func activeTracks(in domain: Domain) -> [Track] {
+        domain.tracks
+            .filter { !$0.isDeletedLocally }
+            .sorted { lhs, rhs in
+                lhs.sortIndex != rhs.sortIndex ? lhs.sortIndex < rhs.sortIndex : lhs.createdAt < rhs.createdAt
+            }
+    }
+
+    private func standaloneModules(in domain: Domain) -> [Module] {
+        domain.modules
+            .filter { !$0.isDeletedLocally && $0.track == nil }
+            .sorted { lhs, rhs in
+                lhs.sortIndex != rhs.sortIndex ? lhs.sortIndex < rhs.sortIndex : lhs.createdAt < rhs.createdAt
+            }
+    }
+
+    private func activeProjects(in domain: Domain) -> [Project] {
+        domain.projects
+            .filter { !$0.isDeletedLocally }
+            .sorted { $0.createdAt < $1.createdAt }
+    }
+
+    private func domainHasChildren(_ domain: Domain) -> Bool {
+        !activeTracks(in: domain).isEmpty
+            || !standaloneModules(in: domain).isEmpty
+            || !activeProjects(in: domain).isEmpty
+    }
+
+    private func domainProgressLabel(_ domain: Domain) -> String? {
+        let nodes = domain.allNodes
+        guard !nodes.isEmpty else { return nil }
+        let mastered = nodes.filter { $0.status == .mastered }.count
+        return "\(Int((Double(mastered) / Double(nodes.count)) * 100))%"
+    }
+
+    private func moduleNodeLabel(_ module: Module) -> String? {
+        let nodes = module.activeNodes
+        guard !nodes.isEmpty else { return nil }
+        let mastered = nodes.filter { $0.status == .mastered }.count
+        return "\(mastered)/\(nodes.count)"
+    }
+
+    // MARK: - Tree selection state
+
+    private func isSectionSelected(_ section: NavSection) -> Bool {
+        !isShowingSettings && selectedSection == section
+    }
+
+    private func isDomainSelected(_ domain: Domain) -> Bool {
+        !isShowingSettings
+            && selectedSection == .domains
+            && selectedDomain?.id == domain.id
+            && selectedTrack == nil
+            && selectedModule == nil
+            && selectedProject == nil
+    }
+
+    private func isTrackSelected(_ track: Track) -> Bool {
+        !isShowingSettings
+            && selectedTrack?.id == track.id
+            && selectedModule == nil
+            && selectedProject == nil
+    }
+
+    private func isModuleSelected(_ module: Module) -> Bool {
+        !isShowingSettings && selectedModule?.id == module.id
+    }
+
+    private func isProjectSelected(_ project: Project) -> Bool {
+        !isShowingSettings && selectedProject?.id == project.id
+    }
+
+    // MARK: - Tree expansion
+
+    private func toggleDomain(_ domain: Domain) {
+        withAnimation(.snappy(duration: 0.18)) {
+            if expandedDomainIDs.contains(domain.id) {
+                expandedDomainIDs.remove(domain.id)
+            } else {
+                expandedDomainIDs.insert(domain.id)
+            }
+        }
+    }
+
+    private func toggleTrack(_ track: Track) {
+        withAnimation(.snappy(duration: 0.18)) {
+            if expandedTrackIDs.contains(track.id) {
+                expandedTrackIDs.remove(track.id)
+            } else {
+                expandedTrackIDs.insert(track.id)
             }
         }
     }
@@ -331,9 +497,16 @@ struct NavigationShell: View {
                 .tabItem { Label(NavSection.inbox.title, systemImage: NavSection.inbox.iconName) }
                 .tag(NavSection.inbox)
 
-            NavigationStack { DomainsView(selectedDomain: $selectedDomain) }
-                .tabItem { Label(NavSection.domains.title, systemImage: NavSection.domains.iconName) }
-                .tag(NavSection.domains)
+            NavigationStack {
+                DomainsView(
+                    selectedDomain: $selectedDomain,
+                    selectedTrack: $selectedTrack,
+                    selectedModule: $selectedModule,
+                    selectedProject: $selectedProject
+                )
+            }
+            .tabItem { Label(NavSection.domains.title, systemImage: NavSection.domains.iconName) }
+            .tag(NavSection.domains)
 
             NavigationStack { ProjectsView() }
                 .tabItem { Label(NavSection.projects.title, systemImage: NavSection.projects.iconName) }
@@ -368,7 +541,12 @@ struct NavigationShell: View {
             case .inbox:
                 InboxView()
             case .domains:
-                DomainsView(selectedDomain: $selectedDomain)
+                DomainsView(
+                    selectedDomain: $selectedDomain,
+                    selectedTrack: $selectedTrack,
+                    selectedModule: $selectedModule,
+                    selectedProject: $selectedProject
+                )
             case .projects:
                 ProjectsView()
             case .readingList:
@@ -381,16 +559,76 @@ struct NavigationShell: View {
         }
     }
 
+    private func selectSection(_ section: NavSection) {
+        withAnimation(.snappy(duration: 0.18)) {
+            selectedSection = section
+            selectedDomain = nil
+            selectedTrack = nil
+            selectedModule = nil
+            selectedProject = nil
+            isShowingSettings = false
+        }
+    }
+
+    private func openDomainsRoot() {
+        withAnimation(.snappy(duration: 0.18)) {
+            selectedSection = .domains
+            selectedDomain = nil
+            selectedTrack = nil
+            selectedModule = nil
+            selectedProject = nil
+            isShowingSettings = false
+        }
+    }
+
     private func openDomain(_ domain: Domain) {
         withAnimation(.snappy(duration: 0.18)) {
             selectedSection = .domains
             selectedDomain = domain
+            selectedTrack = nil
+            selectedModule = nil
+            selectedProject = nil
             isShowingSettings = false
             #if os(macOS)
-            isDomainsExpanded = true
+            expandedDomainIDs.insert(domain.id)
             #endif
         }
     }
+
+    #if os(macOS)
+    private func openTrack(_ track: Track) {
+        withAnimation(.snappy(duration: 0.18)) {
+            selectedSection = .domains
+            selectedDomain = track.domain
+            selectedTrack = track
+            selectedModule = nil
+            selectedProject = nil
+            isShowingSettings = false
+        }
+    }
+
+    private func openModule(_ module: Module) {
+        withAnimation(.snappy(duration: 0.18)) {
+            selectedSection = .domains
+            selectedDomain = module.resolvedDomain
+            selectedTrack = module.track
+            selectedModule = module
+            selectedProject = nil
+            isShowingSettings = false
+        }
+    }
+
+    private func openProject(_ project: Project) {
+        withAnimation(.snappy(duration: 0.18)) {
+            selectedSection = .domains
+            selectedDomain = project.domain ?? project.track?.domain
+            selectedTrack = project.track
+            selectedModule = nil
+            selectedProject = project
+            isShowingSettings = false
+        }
+    }
+    #endif
 
     private func syncNavigationContext() {
         navigationContext.updateShell(
@@ -465,86 +703,129 @@ private struct SidebarRow: View {
 
 }
 
-private struct DomainsSidebarGroupRow: View {
+private struct SidebarSectionHeader: View {
+    let title: String
     let isSelected: Bool
-    let isExpanded: Bool
     let onSelect: () -> Void
-    let onToggle: () -> Void
+    let onAdd: () -> Void
 
     @State private var isHovering = false
 
     var body: some View {
-        HStack(spacing: 4) {
-            Button(action: onToggle) {
-                Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(SymphoTheme.secondaryText)
-                    .frame(width: 16, height: 24)
-            }
-            .buttonStyle(.plain)
-            .help(isExpanded ? "Collapse Domains" : "Expand Domains")
-
+        HStack(spacing: 6) {
             Button(action: onSelect) {
-                HStack(spacing: 8) {
-                    Image(systemName: NavSection.domains.iconName)
-                        .font(.system(size: 14, weight: .medium))
-                        .foregroundStyle(isSelected ? SymphoTheme.primaryText : SymphoTheme.secondaryText)
-                        .frame(width: 20)
-
-                    Text(NavSection.domains.title)
-                        .font(.system(size: 13, weight: isSelected ? .semibold : .medium))
-                        .foregroundStyle(isSelected ? SymphoTheme.primaryText : SymphoTheme.secondaryText)
-
-                    Spacer(minLength: 8)
-                }
-                .padding(.vertical, 7)
-                .padding(.trailing, 10)
-                .contentShape(Rectangle())
+                Text(title.uppercased())
+                    .font(.system(size: 10, weight: .semibold))
+                    .tracking(0.5)
+                    .foregroundStyle(isSelected ? SymphoTheme.secondaryText : SymphoTheme.tertiaryText)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+
+            Spacer(minLength: 4)
+
+            Button(action: onAdd) {
+                Image(systemName: "plus")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(SymphoTheme.tertiaryText)
+                    .frame(width: 18, height: 18)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .opacity(isHovering ? 1 : 0.5)
+            .help("All Domains")
         }
-        .padding(.leading, 2)
-        .background {
-            RoundedRectangle(cornerRadius: SymphoTheme.controlRadius, style: .continuous)
-                .fill(isSelected ? SymphoTheme.elevatedCanvas.opacity(0.82) : (isHovering ? SymphoTheme.elevatedCanvas.opacity(0.42) : .clear))
-        }
+        .padding(.leading, 8)
+        .padding(.trailing, 4)
+        .padding(.top, 14)
+        .padding(.bottom, 4)
         .onHover { isHovering = $0 }
     }
 }
 
-private struct DomainSidebarRow: View {
-    let domain: Domain
+private struct SidebarTreeRow: View {
+    let title: String
+    let icon: String
+    let indent: Int
     let isSelected: Bool
-    let action: () -> Void
+    var trailing: String? = nil
+    var hasDisclosure: Bool = false
+    var isExpanded: Bool = false
+    var titleWeight: Font.Weight = .regular
+    var onToggle: () -> Void = {}
+    let onSelect: () -> Void
 
     @State private var isHovering = false
 
+    private var isRoot: Bool { indent == 0 }
+    private var indentWidth: CGFloat { CGFloat(indent) * 15 }
+
     var body: some View {
-        Button(action: action) {
-            HStack(spacing: 8) {
-                Image(systemName: DomainIcon.validated(domain.iconName))
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(isSelected ? SymphoTheme.primaryText : SymphoTheme.secondaryText)
-                    .frame(width: 18)
+        HStack(spacing: 5) {
+            disclosure
 
-                Text(domain.title)
-                    .font(.system(size: 12, weight: isSelected ? .semibold : .regular))
-                    .foregroundStyle(isSelected ? SymphoTheme.primaryText : SymphoTheme.secondaryText)
-                    .lineLimit(1)
+            Button(action: onSelect) {
+                HStack(spacing: 8) {
+                    Image(systemName: icon)
+                        .font(.system(size: isRoot ? 14 : 12, weight: .medium))
+                        .foregroundStyle(isSelected ? SymphoTheme.primaryText : SymphoTheme.secondaryText)
+                        .frame(width: 18)
 
-                Spacer(minLength: 8)
+                    Text(title)
+                        .font(.system(size: isRoot ? 13 : 12, weight: isSelected ? .semibold : titleWeight))
+                        .foregroundStyle(isSelected ? SymphoTheme.primaryText : SymphoTheme.secondaryText)
+                        .lineLimit(1)
+
+                    Spacer(minLength: 4)
+
+                    if let trailing {
+                        Text(trailing)
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(SymphoTheme.tertiaryText)
+                    }
+                }
+                .contentShape(Rectangle())
             }
-            .padding(.vertical, 6)
-            .padding(.leading, 38)
-            .padding(.trailing, 10)
-            .contentShape(Rectangle())
-            .background {
-                RoundedRectangle(cornerRadius: SymphoTheme.controlRadius, style: .continuous)
-                    .fill(isSelected ? SymphoTheme.elevatedCanvas.opacity(0.82) : (isHovering ? SymphoTheme.elevatedCanvas.opacity(0.42) : .clear))
-            }
+            .buttonStyle(.plain)
         }
-        .buttonStyle(.plain)
+        .padding(.vertical, isRoot ? 6 : 5)
+        .padding(.trailing, 10)
+        .padding(.leading, 4 + indentWidth)
+        .background {
+            RoundedRectangle(cornerRadius: SymphoTheme.controlRadius, style: .continuous)
+                .fill(rowBackground)
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: SymphoTheme.controlRadius, style: .continuous)
+                .stroke(isSelected ? .white.opacity(0.22) : .clear, lineWidth: 1)
+        }
         .onHover { isHovering = $0 }
+    }
+
+    @ViewBuilder
+    private var disclosure: some View {
+        if hasDisclosure {
+            Button(action: onToggle) {
+                Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(SymphoTheme.tertiaryText)
+                    .frame(width: 14, height: 18)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+        } else {
+            Color.clear.frame(width: 14, height: 18)
+        }
+    }
+
+    private var rowBackground: Color {
+        if isSelected {
+            return SymphoTheme.elevatedCanvas.opacity(0.82)
+        }
+        if isHovering {
+            return SymphoTheme.elevatedCanvas.opacity(0.42)
+        }
+        return .clear
     }
 }
 #endif

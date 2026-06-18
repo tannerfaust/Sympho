@@ -20,17 +20,17 @@ struct DomainsView: View {
     private var domains: [Domain]
     
     @Binding var selectedDomain: Domain?
+    @Binding var selectedTrack: Track?
+    @Binding var selectedModule: Module?
+    @Binding var selectedProject: Project?
     @State private var showCreateDomainSheet = false
     @State private var draggedDomain: Domain?
-    
+
     @State private var newDomainTitle = ""
     @State private var newDomainDesc = ""
     @State private var newDomainIcon: DomainIcon = .book
-    
-    @State private var selectedTrack: Track?
-    @State private var selectedModule: Module?
+
     @State private var selectedNode: Node?
-    @State private var selectedProject: Project?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -71,15 +71,18 @@ struct DomainsView: View {
                 domainsListView
             }
         }
-        .onChange(of: selectedDomain) { _, _ in
-            selectedTrack = nil
-            selectedModule = nil
+        .onChange(of: selectedDomain?.id) { _, _ in
             selectedNode = nil
-            selectedProject = nil
             syncNavigationContext()
         }
-        .onChange(of: selectedTrack?.id) { _, _ in syncNavigationContext() }
-        .onChange(of: selectedModule?.id) { _, _ in syncNavigationContext() }
+        .onChange(of: selectedTrack?.id) { _, _ in
+            selectedNode = nil
+            syncNavigationContext()
+        }
+        .onChange(of: selectedModule?.id) { _, _ in
+            selectedNode = nil
+            syncNavigationContext()
+        }
         .onChange(of: selectedNode?.id) { _, _ in syncNavigationContext() }
         .onChange(of: selectedProject?.id) { _, _ in syncNavigationContext() }
         .onAppear {
@@ -128,6 +131,9 @@ struct DomainsView: View {
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 300))], spacing: SymphoTheme.gridSpacing) {
                         ForEach(domains) { domain in
                             Button(action: {
+                                selectedTrack = nil
+                                selectedModule = nil
+                                selectedProject = nil
                                 selectedDomain = domain
                             }) {
                                 DomainCard(domain: domain)
