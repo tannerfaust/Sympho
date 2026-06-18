@@ -4,6 +4,7 @@
 //
 
 import SwiftUI
+import SwiftData
 import UniformTypeIdentifiers
 #if os(macOS)
 import AppKit
@@ -11,16 +12,28 @@ import AppKit
 
 struct SettingsView: View {
     @AppStorage("devCaptureEnabled") private var devCaptureEnabled = DevCaptureSettings.isEnabled
+    @AppStorage(MenuBarCaptureSettings.defaultIntentKey) private var menuBarDefaultIntentRawValue = CaptureIntent.learningNode.rawValue
     @State private var showsWorkspacePicker = false
     @State private var workspaceName = LibraryStorage.workspaceName
     @State private var repositoryInfo = LibraryStorage.repositoryInfo
     @State private var showsCompactTitle = false
+    @State private var menuBarDefaultRoute: CaptureRoute = .inbox
+
+    @Query(
+        filter: #Predicate<Domain> { !$0.isArchived && !$0.isDeletedLocally },
+        sort: [SortDescriptor(\Domain.sortIndex), SortDescriptor(\Domain.title)]
+    )
+    private var domains: [Domain]
+
+    @Query(filter: #Predicate<Project> { !$0.isDeletedLocally }, sort: \Project.title)
+    private var projects: [Project]
 
     var body: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 22) {
                 header
                 developerSection
+                quickCaptureSection
                 libraryStorageSection
                 gitSection
             }
@@ -46,6 +59,7 @@ struct SettingsView: View {
                 .offset(y: -2)
                 .accessibilityHidden(!showsCompactTitle)
         }
+        .onAppear(perform: loadMenuBarCaptureSettings)
         .fileImporter(
             isPresented: $showsWorkspacePicker,
             allowedContentTypes: [.folder],
@@ -64,6 +78,47 @@ struct SettingsView: View {
 
             Text("Storage and versioning for your Sympho workspace.")
                 .metadataSans()
+        }
+    }
+
+    private var quickCaptureSection: some View {
+        SettingsSection(title: "Menu Bar Capture", iconName: "sparkles") {
+            VStack(alignment: .leading, spacing: 14) {
+                Text("Sympho stays available from the menu bar. Use it to open a compact capture window without opening the full workspace.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(SymphoTheme.secondaryText)
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("DEFAULT TYPE")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(SymphoTheme.tertiaryText)
+
+                    Picker("Default Type", selection: defaultIntentBinding) {
+                        Text("Thing to Learn").tag(CaptureIntent.learningNode)
+                        Text("Learning Material").tag(CaptureIntent.learningMaterial)
+                        Text("Inbox").tag(CaptureIntent.planInbox)
+                    }
+                    .pickerStyle(.segmented)
+                }
+
+                if defaultIntentBinding.wrappedValue.showsDestinationPicker {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("DEFAULT DESTINATION")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(SymphoTheme.tertiaryText)
+
+                        CaptureDestinationPicker(
+                            route: defaultRouteBinding,
+                            domains: domains,
+                            projects: projects
+                        )
+
+                        Text(defaultDestinationHelp)
+                            .font(.system(size: 11))
+                            .foregroundStyle(SymphoTheme.secondaryText)
+                    }
+                }
+            }
         }
     }
 
@@ -180,6 +235,43 @@ struct SettingsView: View {
     private func refreshStorageState() {
         workspaceName = LibraryStorage.workspaceName
         repositoryInfo = LibraryStorage.repositoryInfo
+    }
+
+    private var defaultIntentBinding: Binding<CaptureIntent> {
+        Binding(
+            get: {
+                CaptureIntent(rawValue: menuBarDefaultIntentRawValue) ?? .learningNode
+            },
+            set: { newValue in
+                menuBarDefaultIntentRawValue = newValue.rawValue
+                MenuBarCaptureSettings.defaultIntent = newValue
+                if !newValue.showsDestinationPicker {
+                    menuBarDefaultRoute = .inbox
+                    MenuBarCaptureSettings.saveDefaultRoute(.inbox)
+                }
+            }
+        )
+    }
+
+    private var defaultRouteBinding: Binding<CaptureRoute> {
+        Binding(
+            get: { menuBarDefaultRoute },
+            set: { newValue in
+                menuBarDefaultRoute = newValue
+                MenuBarCaptureSettings.saveDefaultRoute(newValue)
+            }
+        )
+    }
+
+    private var defaultDestinationHelp: String {
+        if menuBarDefaultRoute.isInbox {
+            return "No destination selected. Menu bar captures will use Inbox unless you choose a domain, module, track, or project."
+        }
+        return "Menu bar captures will preselect \(menuBarDefaultRoute.label). You can still change it in the capture window."
+    }
+
+    private func loadMenuBarCaptureSettings() {
+        menuBarDefaultRoute = MenuBarCaptureSettings.defaultRoute(domains: domains, projects: projects)
     }
 
     private func openWorkspaceFolder() {

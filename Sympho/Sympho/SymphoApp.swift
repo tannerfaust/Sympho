@@ -42,21 +42,46 @@ struct SymphoApp: App {
     }
 
     var body: some Scene {
-        WindowGroup {
-            ContentView()
-                .modelContainer(container)
-                .onChange(of: scenePhase) { _, newPhase in
-                    guard newPhase == .inactive || newPhase == .background else { return }
-                    do {
-                        try container.mainContext.save()
-                    } catch {
-                        print("Could not save local SwiftData changes: \(error.localizedDescription)")
-                    }
-                }
-        }
         #if os(macOS)
+        WindowGroup("Sympho", id: "main") {
+            rootContent
+        }
         .windowStyle(.hiddenTitleBar)
+        .defaultLaunchBehavior(.suppressed)
+
+        MenuBarExtra {
+            MenuBarCaptureMenu()
+                .modelContainer(container)
+        } label: {
+            Label("Sympho", image: "SymphoMenuBarIcon")
+        }
+        .menuBarExtraStyle(.menu)
+
+        WindowGroup("Quick Capture", id: "quickCapture", for: QuickCaptureLaunchConfiguration.self) { configuration in
+            QuickCaptureWindow(configuration: configuration.wrappedValue)
+                .modelContainer(container)
+                .preferredColorScheme(.light)
+        }
+        .windowResizability(.contentSize)
+        .restorationBehavior(.disabled)
+        #else
+        WindowGroup {
+            rootContent
+        }
         #endif
+    }
+
+    private var rootContent: some View {
+        ContentView()
+            .modelContainer(container)
+            .onChange(of: scenePhase) { _, newPhase in
+                guard newPhase == .inactive || newPhase == .background else { return }
+                do {
+                    try container.mainContext.save()
+                } catch {
+                    print("Could not save local SwiftData changes: \(error.localizedDescription)")
+                }
+            }
     }
 }
 

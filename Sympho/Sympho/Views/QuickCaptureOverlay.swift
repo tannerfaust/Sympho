@@ -70,6 +70,8 @@ struct QuickCaptureOverlay: View {
     @Environment(\.dismiss) private var dismiss
 
     @Binding var isPresented: Bool
+    var initialIntent: CaptureIntent?
+    var initialRoute: CaptureRoute?
 
     @State private var textInput: String = ""
     @State private var captureIntent: CaptureIntent = .planInbox
@@ -94,6 +96,18 @@ struct QuickCaptureOverlay: View {
 
     private var hasPreviews: Bool {
         !attachedFiles.isEmpty || pastedLinkPreview != nil
+    }
+
+    init(
+        isPresented: Binding<Bool>,
+        initialIntent: CaptureIntent? = nil,
+        initialRoute: CaptureRoute? = nil
+    ) {
+        _isPresented = isPresented
+        self.initialIntent = initialIntent
+        self.initialRoute = initialRoute
+        _captureIntent = State(initialValue: initialIntent ?? .planInbox)
+        _route = State(initialValue: initialIntent == .planInbox ? .inbox : (initialRoute ?? .inbox))
     }
 
     var body: some View {
@@ -138,7 +152,7 @@ struct QuickCaptureOverlay: View {
         #endif
         .fileImporter(
             isPresented: $isShowingFileImporter,
-            allowedContentTypes: [.item],
+            allowedContentTypes: LibraryFileClassifier.importableContentTypes,
             allowsMultipleSelection: true
         ) { result in
             switch result {
@@ -150,6 +164,9 @@ struct QuickCaptureOverlay: View {
         }
         .onChange(of: captureIntent) { _, newIntent in
             if newIntent.showsDestinationPicker {
+                let configuredRoute = MenuBarCaptureSettings.suggestedDefaultRoute(domains: domains, projects: projects)
+                route = configuredRoute.isValid ? configuredRoute : .inbox
+            } else {
                 route.selectInbox()
             }
         }
@@ -340,41 +357,15 @@ struct QuickCaptureOverlay: View {
     }
 
     private func fileIcon(for url: URL) -> String {
-        let ext = url.pathExtension.lowercased()
-        if ["mp4", "mov", "m4v", "avi", "mkv"].contains(ext) {
-            return "play.rectangle.fill"
-        }
-        if ["pdf", "epub", "doc", "docx", "pages", "txt", "md"].contains(ext) {
-            return "doc.text.fill"
-        }
-        return "doc.fill"
+        LibraryFileClassifier.iconName(forFile: url)
     }
 
     private func fileSizeLabel(for url: URL) -> String? {
-        guard
-            let values = try? url.resourceValues(forKeys: [.fileSizeKey]),
-            let size = values.fileSize
-        else {
-            return url.pathExtension.isEmpty ? nil : url.pathExtension.uppercased()
-        }
-
-        if size < 1_024 {
-            return "\(size) B"
-        }
-        if size < 1_024 * 1_024 {
-            return String(format: "%.0f KB", Double(size) / 1_024)
-        }
-        return String(format: "%.1f MB", Double(size) / (1_024 * 1_024))
+        LibraryFileClassifier.fileSizeLabel(for: url)
     }
 
     private func detectResourceType(for url: URL) -> ResourceType {
-        let ext = url.pathExtension.lowercased()
-        if ["pdf", "epub", "doc", "docx", "pages", "txt"].contains(ext) {
-            return .pdf
-        } else if ["mp4", "mov", "m4v", "avi", "mkv"].contains(ext) {
-            return .video
-        }
-        return .pdf
+        LibraryFileClassifier.resourceType(forFile: url)
     }
 
     private func linkResourceType(for link: String) -> ResourceType {
@@ -430,18 +421,14 @@ struct QuickCaptureOverlay: View {
                 domain: destinationDomain
             )
 
-            guard let imported = try? LibraryStorage.importFile(from: fileURL, entryID: res.id, entryTitle: nodeTitle) else {
-                failedFiles.append(fileURL.lastPathComponent)
+            let attachment: LibraryAttachment
+            do {
+                let imported = try LibraryStorage.importFile(from: fileURL, entryID: res.id, entryTitle: nodeTitle)
+                attachment = LibraryAttachment(imported: imported, resource: res)
+            } catch {
+                failedFiles.append("\(fileURL.lastPathComponent): \(error.localizedDescription)")
                 continue
             }
-
-            let attachment = LibraryAttachment(
-                displayName: imported.displayName,
-                storedPath: imported.storedPath,
-                storageKind: imported.storageKind,
-                contentType: imported.contentType,
-                resource: res
-            )
 
             modelContext.insert(res)
             modelContext.insert(attachment)
@@ -478,6 +465,7 @@ struct QuickCaptureOverlay: View {
         textInput = ""
         attachedFiles = []
         if failedFiles.isEmpty {
+            isPresented = false
             dismiss()
         } else {
             importErrorMessage = "The capture was saved, but Sympho could not copy: \(failedFiles.joined(separator: ", "))."
