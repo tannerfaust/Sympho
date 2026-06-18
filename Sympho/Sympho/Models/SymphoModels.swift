@@ -915,6 +915,13 @@ final class PlannerDayNote: Identifiable {
     }
 }
 
+enum LibraryAttachmentSyncState: String, Codable, CaseIterable {
+    case local
+    case queued
+    case synced
+    case failed
+}
+
 @Model
 final class LibraryAttachment: Identifiable {
     @Attribute(.unique) var id: UUID
@@ -922,8 +929,17 @@ final class LibraryAttachment: Identifiable {
     var storedPath: String
     var storageKind: String
     var contentType: String
+    var byteSize: Int64?
+    var sha256: String?
+    var remoteStorageKey: String?
+    var syncStateValue: String?
     var createdAt: Date
     var resource: Resource?
+
+    var syncState: LibraryAttachmentSyncState {
+        get { LibraryAttachmentSyncState(rawValue: syncStateValue ?? LibraryAttachmentSyncState.local.rawValue) ?? .local }
+        set { syncStateValue = newValue.rawValue }
+    }
 
     init(
         id: UUID = UUID(),
@@ -931,6 +947,10 @@ final class LibraryAttachment: Identifiable {
         storedPath: String,
         storageKind: String,
         contentType: String,
+        byteSize: Int64? = nil,
+        sha256: String? = nil,
+        remoteStorageKey: String? = nil,
+        syncState: LibraryAttachmentSyncState = .local,
         resource: Resource? = nil
     ) {
         self.id = id
@@ -938,8 +958,27 @@ final class LibraryAttachment: Identifiable {
         self.storedPath = storedPath
         self.storageKind = storageKind
         self.contentType = contentType
+        self.byteSize = byteSize
+        self.sha256 = sha256
+        self.remoteStorageKey = remoteStorageKey
+        self.syncStateValue = syncState.rawValue
         self.createdAt = Date()
         self.resource = resource
+    }
+
+    convenience init(imported file: ImportedLibraryFile, resource: Resource? = nil) {
+        self.init(
+            id: file.id,
+            displayName: file.displayName,
+            storedPath: file.storedPath,
+            storageKind: file.storageKind,
+            contentType: file.contentType,
+            byteSize: file.byteSize,
+            sha256: file.sha256,
+            remoteStorageKey: file.remoteStorageKey,
+            syncState: .local,
+            resource: resource
+        )
     }
 }
 

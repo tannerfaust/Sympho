@@ -102,13 +102,7 @@ struct LibraryView: View {
         
         // Immediately save the note as a real markdown file in the workspace
         if let imported = try? LibraryStorage.saveMarkdownNote("", entryID: newEntry.id, entryTitle: newEntry.title) {
-            let attachment = LibraryAttachment(
-                displayName: imported.displayName,
-                storedPath: imported.storedPath,
-                storageKind: imported.storageKind,
-                contentType: imported.contentType,
-                resource: newEntry
-            )
+            let attachment = LibraryAttachment(imported: imported, resource: newEntry)
             modelContext.insert(attachment)
             newEntry.attachments.append(attachment)
         }
@@ -638,6 +632,7 @@ private struct LibraryEntryCard: View {
                 id: attachment.id,
                 name: attachment.displayName,
                 contentType: attachment.contentType,
+                byteSize: attachment.byteSize,
                 url: LibraryStorage.resolvedURL(for: attachment)
             )
         }
@@ -647,6 +642,7 @@ private struct LibraryEntryCard: View {
             id: entry.id,
             name: legacyURL.lastPathComponent,
             contentType: UTType(filenameExtension: legacyURL.pathExtension)?.identifier ?? UTType.data.identifier,
+            byteSize: nil,
             url: legacyURL
         )
     }
@@ -693,7 +689,7 @@ private struct LibraryEntryDetailView: View {
     private var readingBooks: [ReadingListItem]
 
     @State private var showsCompactTitle = false
-    @State private var selectedImage: LibraryImagePreview?
+    @State private var selectedFilePreview: LibraryPreviewFile?
 
     init(entry: Resource, onBack: @escaping () -> Void) {
         self.entry = entry
@@ -745,13 +741,7 @@ private struct LibraryEntryDetailView: View {
             }
         } else if entry.resourceType == .note {
             if let imported = try? LibraryStorage.saveMarkdownNote(bodyText, entryID: entry.id, entryTitle: trimmedTitle) {
-                let attachment = LibraryAttachment(
-                    displayName: imported.displayName,
-                    storedPath: imported.storedPath,
-                    storageKind: imported.storageKind,
-                    contentType: imported.contentType,
-                    resource: entry
-                )
+                let attachment = LibraryAttachment(imported: imported, resource: entry)
                 modelContext.insert(attachment)
                 entry.attachments.append(attachment)
                 bodyChanged = true
@@ -827,8 +817,8 @@ private struct LibraryEntryDetailView: View {
             .padding(.bottom, SymphoTheme.outerPadding)
         }
         .libraryScrollChrome(title: title.isEmpty ? "Note Detail" : title, showsCompactTitle: $showsCompactTitle)
-        .sheet(item: $selectedImage) { preview in
-            LibraryImageViewer(preview: preview)
+        .sheet(item: $selectedFilePreview) { preview in
+            LibraryFilePreviewSheet(file: preview)
         }
         .task(id: changeSignature) {
             do {
@@ -1059,6 +1049,7 @@ private struct LibraryEntryDetailView: View {
                 id: $0.id,
                 name: $0.displayName,
                 contentType: $0.contentType,
+                byteSize: $0.byteSize,
                 url: LibraryStorage.resolvedURL(for: $0)
             )
         }
@@ -1071,6 +1062,7 @@ private struct LibraryEntryDetailView: View {
                         id: entry.id,
                         name: legacyURL.lastPathComponent,
                         contentType: UTType(filenameExtension: legacyURL.pathExtension)?.identifier ?? UTType.data.identifier,
+                        byteSize: nil,
                         url: legacyURL
                     )
                 )
@@ -1082,12 +1074,19 @@ private struct LibraryEntryDetailView: View {
 
     private func open(_ attachment: LibraryDisplayAttachment) {
         guard let url = attachment.url else { return }
-        if attachment.isImage {
-            selectedImage = LibraryImagePreview(url: url, title: attachment.name)
+
+        let preview = LibraryPreviewFile(
+            id: attachment.id,
+            title: attachment.name,
+            contentType: attachment.contentType,
+            url: url,
+            byteSize: attachment.byteSize
+        )
+
+        if preview.isPreviewable {
+            selectedFilePreview = preview
         } else {
-            #if os(macOS)
-            NSWorkspace.shared.open(url)
-            #endif
+            LibraryFileActions.openExternally(url)
         }
     }
 }
@@ -1108,7 +1107,7 @@ private struct LibraryAttachmentCard: View {
 
                 Spacer()
 
-                Text(attachment.typeLabel)
+                Text(attachment.sizeLabel ?? attachment.typeLabel)
                     .font(.system(size: 9, weight: .semibold))
                     .foregroundStyle(SymphoTheme.tertiaryText)
 
@@ -1217,7 +1216,7 @@ private struct CreateLibraryEntrySheet: View {
         .background(SymphoTheme.primaryCanvas)
         .fileImporter(
             isPresented: $showsFileImporter,
-            allowedContentTypes: [.data, .content, .image, .pdf],
+            allowedContentTypes: LibraryFileClassifier.importableContentTypes,
             allowsMultipleSelection: true
         ) { result in
             guard case .success(let urls) = result else { return }
@@ -1340,19 +1339,14 @@ private struct CreateLibraryEntrySheet: View {
 
         var failedFiles: [String] = []
         for file in selectedFiles {
-            guard let imported = try? LibraryStorage.importFile(from: file, entryID: entry.id, entryTitle: entry.title) else {
-                failedFiles.append(file.lastPathComponent)
-                continue
+            do {
+                let imported = try LibraryStorage.importFile(from: file, entryID: entry.id, entryTitle: entry.title)
+                let attachment = LibraryAttachment(imported: imported, resource: entry)
+                modelContext.insert(attachment)
+                entry.attachments.append(attachment)
+            } catch {
+                failedFiles.append("\(file.lastPathComponent): \(error.localizedDescription)")
             }
-            let attachment = LibraryAttachment(
-                displayName: imported.displayName,
-                storedPath: imported.storedPath,
-                storageKind: imported.storageKind,
-                contentType: imported.contentType,
-                resource: entry
-            )
-            modelContext.insert(attachment)
-            entry.attachments.append(attachment)
         }
 
         try? modelContext.save()
@@ -1396,6 +1390,7 @@ private struct LibraryDisplayAttachment: Identifiable {
     let id: UUID
     let name: String
     let contentType: String
+    let byteSize: Int64?
     let url: URL?
 
     var isImage: Bool {
@@ -1420,6 +1415,10 @@ private struct LibraryDisplayAttachment: Identifiable {
         if UTType(contentType)?.conforms(to: .pdf) == true { return "PDF" }
         if isMarkdown { return "NOTE" }
         return "FILE"
+    }
+
+    var sizeLabel: String? {
+        LibraryFileClassifier.formattedByteSize(byteSize)
     }
 
     var isMarkdown: Bool {

@@ -4,10 +4,13 @@
 //
 
 import Foundation
+import CryptoKit
 import UniformTypeIdentifiers
 
 enum LibraryStorage {
     private static let bookmarkKey = "libraryWorkspaceBookmark"
+    private static let workspaceStorageKind = "workspace"
+    private static let internalStorageKind = "internal"
 
     static var workspaceURL: URL? {
         #if os(macOS)
@@ -86,17 +89,24 @@ enum LibraryStorage {
     }
 
     static func importFile(from sourceURL: URL, entryID: UUID, entryTitle: String) throws -> ImportedLibraryFile {
-        let destinationRoot: URL
-        let storageKind: String
-
-        if let workspaceURL {
-            destinationRoot = workspaceURL
-            storageKind = "workspace"
-        } else {
-            destinationRoot = try internalLibraryRoot()
-            storageKind = "internal"
+        guard sourceURL.isFileURL else {
+            throw LibraryStorageError.unsupportedURL
         }
 
+        let sourceURL = sourceURL.standardizedFileURL
+
+        let hasSourceAccess = sourceURL.startAccessingSecurityScopedResource()
+        defer {
+            if hasSourceAccess {
+                sourceURL.stopAccessingSecurityScopedResource()
+            }
+        }
+
+        try validateImportableFile(at: sourceURL)
+
+        let attachmentID = UUID()
+        let destinationRoot = try activeStorageRoot()
+        let storageKind = activeStorageKind()
         let hasRootAccess = destinationRoot.startAccessingSecurityScopedResource()
         defer {
             if hasRootAccess {
@@ -109,40 +119,41 @@ enum LibraryStorage {
             .appendingPathComponent(entryFolderName(title: entryTitle, id: entryID), isDirectory: true)
         try FileManager.default.createDirectory(at: entryFolder, withIntermediateDirectories: true)
 
-        let destinationURL = uniqueDestination(for: sourceURL.lastPathComponent, in: entryFolder)
-        let hasSourceAccess = sourceURL.startAccessingSecurityScopedResource()
-        defer {
-            if hasSourceAccess {
-                sourceURL.stopAccessingSecurityScopedResource()
-            }
-        }
+        let destinationName = sanitizedStoredFilename(sourceURL.lastPathComponent, fallback: "Attachment")
+        let destinationURL = uniqueDestination(for: destinationName, in: entryFolder)
+        let temporaryURL = entryFolder.appendingPathComponent(".\(attachmentID.uuidString).importing", isDirectory: false)
 
-        try FileManager.default.copyItem(at: sourceURL, to: destinationURL)
+        try? FileManager.default.removeItem(at: temporaryURL)
+        do {
+            try FileManager.default.copyItem(at: sourceURL, to: temporaryURL)
+            try FileManager.default.moveItem(at: temporaryURL, to: destinationURL)
+        } catch {
+            try? FileManager.default.removeItem(at: temporaryURL)
+            throw LibraryStorageError.copyFailed(sourceURL.lastPathComponent, error.localizedDescription)
+        }
 
         let relativePath = destinationURL.path.replacingOccurrences(
             of: destinationRoot.path + "/",
             with: ""
         )
+        let metadata = try fileMetadata(at: destinationURL, fallbackURL: sourceURL)
 
         return ImportedLibraryFile(
+            id: attachmentID,
             displayName: sourceURL.lastPathComponent,
             storedPath: relativePath,
             storageKind: storageKind,
-            contentType: UTType(filenameExtension: sourceURL.pathExtension)?.identifier ?? UTType.data.identifier
+            contentType: metadata.contentType.identifier,
+            byteSize: metadata.byteSize,
+            sha256: metadata.sha256,
+            remoteStorageKey: remoteStorageKey(entryID: entryID, attachmentID: attachmentID, filename: destinationName)
         )
     }
 
     static func saveMarkdownNote(_ markdown: String, entryID: UUID, entryTitle: String) throws -> ImportedLibraryFile {
-        let destinationRoot: URL
-        let storageKind: String
-
-        if let workspaceURL {
-            destinationRoot = workspaceURL
-            storageKind = "workspace"
-        } else {
-            destinationRoot = try internalLibraryRoot()
-            storageKind = "internal"
-        }
+        let attachmentID = UUID()
+        let destinationRoot = try activeStorageRoot()
+        let storageKind = activeStorageKind()
 
         let hasRootAccess = destinationRoot.startAccessingSecurityScopedResource()
         defer {
@@ -159,12 +170,17 @@ enum LibraryStorage {
         let filename = "\(sanitizedFilename(entryTitle)).md"
         let destinationURL = uniqueDestination(for: filename, in: entryFolder)
         try markdown.write(to: destinationURL, atomically: true, encoding: .utf8)
+        let metadata = try fileMetadata(at: destinationURL, fallbackURL: destinationURL)
 
         return ImportedLibraryFile(
+            id: attachmentID,
             displayName: destinationURL.lastPathComponent,
             storedPath: relativePath(for: destinationURL, from: destinationRoot),
             storageKind: storageKind,
-            contentType: "net.daringfireball.markdown"
+            contentType: "net.daringfireball.markdown",
+            byteSize: metadata.byteSize,
+            sha256: metadata.sha256,
+            remoteStorageKey: remoteStorageKey(entryID: entryID, attachmentID: attachmentID, filename: destinationURL.lastPathComponent)
         )
     }
 
@@ -182,10 +198,16 @@ enum LibraryStorage {
         }
 
         try markdown.write(to: url, atomically: true, encoding: .utf8)
+
+        let metadata = try fileMetadata(at: url, fallbackURL: url)
+        attachment.byteSize = metadata.byteSize
+        attachment.sha256 = metadata.sha256
+        attachment.contentType = "net.daringfireball.markdown"
+        attachment.syncState = .local
     }
 
     static func resolvedURL(for attachment: LibraryAttachment) -> URL? {
-        let root = attachment.storageKind == "workspace"
+        let root = attachment.storageKind == workspaceStorageKind
             ? workspaceURL
             : try? internalLibraryRoot()
         return root?.appendingPathComponent(attachment.storedPath)
@@ -207,6 +229,22 @@ enum LibraryStorage {
         }
 
         return operation()
+    }
+
+    static func scopedAccess(forResolvedURL url: URL) -> LibraryStorageAccess {
+        let standardizedURL = url.standardizedFileURL
+        guard let workspaceURL else {
+            return LibraryStorageAccess(url: nil)
+        }
+
+        let standardizedWorkspace = workspaceURL.standardizedFileURL
+        let workspacePath = standardizedWorkspace.path
+        let filePath = standardizedURL.path
+        guard filePath == workspacePath || filePath.hasPrefix(workspacePath + "/") else {
+            return LibraryStorageAccess(url: nil)
+        }
+
+        return LibraryStorageAccess(url: standardizedWorkspace)
     }
 
     static func legacyResolvedURL(for resource: Resource) -> URL? {
@@ -235,6 +273,66 @@ enum LibraryStorage {
 
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         return root
+    }
+
+    private static func activeStorageRoot() throws -> URL {
+        if let workspaceURL {
+            return workspaceURL
+        }
+
+        return try internalLibraryRoot()
+    }
+
+    private static func activeStorageKind() -> String {
+        workspaceURL == nil ? internalStorageKind : workspaceStorageKind
+    }
+
+    private static func validateImportableFile(at url: URL) throws {
+        let values = try url.resourceValues(forKeys: [.isDirectoryKey, .isRegularFileKey, .isPackageKey])
+
+        if values.isDirectory == true || values.isPackage == true {
+            throw LibraryStorageError.unsupportedDirectory
+        }
+
+        if values.isRegularFile == false {
+            throw LibraryStorageError.unsupportedFile
+        }
+
+        guard FileManager.default.isReadableFile(atPath: url.path) else {
+            throw LibraryStorageError.unreadableFile(url.lastPathComponent)
+        }
+    }
+
+    private static func fileMetadata(at url: URL, fallbackURL: URL) throws -> LibraryFileMetadata {
+        let values = try url.resourceValues(forKeys: [.fileSizeKey, .contentTypeKey])
+        let byteSize = Int64(values.fileSize ?? 0)
+        let fallbackContentType = try? fallbackURL.resourceValues(forKeys: [.contentTypeKey]).contentType
+        let contentType = values.contentType
+            ?? fallbackContentType
+            ?? UTType(filenameExtension: fallbackURL.pathExtension)
+            ?? UTType.data
+        let sha256 = try sha256HexDigest(for: url)
+
+        return LibraryFileMetadata(contentType: contentType, byteSize: byteSize, sha256: sha256)
+    }
+
+    private static func sha256HexDigest(for url: URL) throws -> String {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer {
+            try? handle.close()
+        }
+
+        var hasher = SHA256()
+        while true {
+            guard let data = try handle.read(upToCount: 1024 * 1024), !data.isEmpty else {
+                break
+            }
+            hasher.update(data: data)
+        }
+
+        return hasher.finalize()
+            .map { String(format: "%02x", $0) }
+            .joined()
     }
 
     private static func uniqueDestination(for filename: String, in folder: URL) -> URL {
@@ -270,6 +368,14 @@ enum LibraryStorage {
         return name.isEmpty ? "Untitled Note" : name
     }
 
+    private static func sanitizedStoredFilename(_ filename: String, fallback: String) -> String {
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: " -_().[]"))
+        let cleaned = filename.unicodeScalars
+            .map { allowed.contains($0) ? Character(String($0)) : "-" }
+        let name = String(cleaned).trimmingCharacters(in: .whitespacesAndNewlines)
+        return name.isEmpty ? fallback : name
+    }
+
     private static func entryFolderName(title: String, id: UUID) -> String {
         let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: " -_"))
         let cleaned = title.unicodeScalars
@@ -295,27 +401,72 @@ enum LibraryStorage {
 
         return nil
     }
+
+    private static func remoteStorageKey(entryID: UUID, attachmentID: UUID, filename: String) -> String {
+        "resources/\(entryID.uuidString.lowercased())/attachments/\(attachmentID.uuidString.lowercased())/\(filename)"
+    }
 }
 
 enum LibraryStorageError: LocalizedError {
     case missingFile
+    case unsupportedURL
+    case unsupportedDirectory
+    case unsupportedFile
+    case unreadableFile(String)
+    case copyFailed(String, String)
 
     var errorDescription: String? {
         switch self {
         case .missingFile:
             return "The saved file could not be found. Choose the correct Library folder in Settings and try again."
+        case .unsupportedURL:
+            return "Sympho can only import local files."
+        case .unsupportedDirectory:
+            return "Folders and app packages cannot be imported as Library files."
+        case .unsupportedFile:
+            return "This item is not a regular file Sympho can copy."
+        case .unreadableFile(let filename):
+            return "\(filename) is not readable. Check the file permissions and try again."
+        case .copyFailed(let filename, let reason):
+            return "\(filename) could not be copied: \(reason)"
         }
     }
 }
 
 struct ImportedLibraryFile {
+    let id: UUID
     let displayName: String
     let storedPath: String
     let storageKind: String
     let contentType: String
+    let byteSize: Int64
+    let sha256: String
+    let remoteStorageKey: String
 }
 
 struct LibraryRepositoryInfo {
     let branch: String
     let remoteURL: String?
+}
+
+struct LibraryFileMetadata {
+    let contentType: UTType
+    let byteSize: Int64
+    let sha256: String
+}
+
+final class LibraryStorageAccess {
+    private let url: URL?
+    private let didStartAccessing: Bool
+
+    init(url: URL?) {
+        self.url = url
+        self.didStartAccessing = url?.startAccessingSecurityScopedResource() ?? false
+    }
+
+    deinit {
+        if didStartAccessing {
+            url?.stopAccessingSecurityScopedResource()
+        }
+    }
 }

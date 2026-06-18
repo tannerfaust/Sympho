@@ -583,7 +583,7 @@ private struct InboxCaptureDetailSheet: View {
         #endif
         .fileImporter(
             isPresented: $isShowingFileImporter,
-            allowedContentTypes: [.item],
+            allowedContentTypes: LibraryFileClassifier.importableContentTypes,
             allowsMultipleSelection: true
         ) { result in
             switch result {
@@ -833,18 +833,14 @@ private struct InboxCaptureDetailSheet: View {
                 domain: route.domain ?? route.project?.domain
             )
 
-            guard let imported = try? LibraryStorage.importFile(from: url, entryID: resource.id, entryTitle: node.title) else {
-                failedFiles.append(url.lastPathComponent)
+            let attachment: LibraryAttachment
+            do {
+                let imported = try LibraryStorage.importFile(from: url, entryID: resource.id, entryTitle: node.title)
+                attachment = LibraryAttachment(imported: imported, resource: resource)
+            } catch {
+                failedFiles.append("\(url.lastPathComponent): \(error.localizedDescription)")
                 continue
             }
-
-            let attachment = LibraryAttachment(
-                displayName: imported.displayName,
-                storedPath: imported.storedPath,
-                storageKind: imported.storageKind,
-                contentType: imported.contentType,
-                resource: resource
-            )
 
             modelContext.insert(resource)
             modelContext.insert(attachment)
@@ -898,17 +894,7 @@ private struct InboxCaptureDetailSheet: View {
     }
 
     private func resourceType(forFile url: URL) -> ResourceType {
-        let ext = url.pathExtension.lowercased()
-        if ["mp4", "mov", "m4v", "avi", "mkv"].contains(ext) {
-            return .video
-        }
-        if ["txt", "md"].contains(ext) {
-            return .note
-        }
-        if ["html", "webloc"].contains(ext) {
-            return .url
-        }
-        return .pdf
+        LibraryFileClassifier.resourceType(forFile: url)
     }
 
     private func resourceType(forLink link: String) -> ResourceType {
@@ -928,6 +914,8 @@ private struct InboxCaptureAttachmentRow: View {
     let resource: Resource
     var onDelete: () -> Void
 
+    @State private var selectedPreview: LibraryPreviewFile?
+
     private var destinationURL: URL? {
         if let attachment = resource.attachments.first {
             return LibraryStorage.resolvedURL(for: attachment)
@@ -938,6 +926,31 @@ private struct InboxCaptureAttachmentRow: View {
         }
 
         return URL(string: resource.urlString)
+    }
+
+    private var previewFile: LibraryPreviewFile? {
+        if let attachment = resource.attachments.first,
+           let url = LibraryStorage.resolvedURL(for: attachment) {
+            return LibraryPreviewFile(
+                id: attachment.id,
+                title: attachment.displayName,
+                contentType: attachment.contentType,
+                url: url,
+                byteSize: attachment.byteSize
+            )
+        }
+
+        if let legacyURL = LibraryStorage.legacyResolvedURL(for: resource) {
+            return LibraryPreviewFile(
+                id: resource.id,
+                title: legacyURL.lastPathComponent,
+                contentType: UTType(filenameExtension: legacyURL.pathExtension)?.identifier ?? UTType.data.identifier,
+                url: legacyURL,
+                byteSize: nil
+            )
+        }
+
+        return nil
     }
 
     private var subtitle: String {
@@ -1007,13 +1020,22 @@ private struct InboxCaptureAttachmentRow: View {
             Button("Remove", role: .destructive, action: onDelete)
         }
         .opacity(destinationURL == nil ? 0.64 : 1)
+        .sheet(item: $selectedPreview) { preview in
+            LibraryFilePreviewSheet(file: preview)
+        }
     }
 
     private func openResource() {
-        guard let destinationURL else { return }
+        if let previewFile {
+            if previewFile.isPreviewable {
+                selectedPreview = previewFile
+            } else {
+                LibraryFileActions.openExternally(previewFile.url)
+            }
+            return
+        }
 
-        #if os(macOS)
-        NSWorkspace.shared.open(destinationURL)
-        #endif
+        guard let destinationURL else { return }
+        LibraryFileActions.openExternally(destinationURL)
     }
 }

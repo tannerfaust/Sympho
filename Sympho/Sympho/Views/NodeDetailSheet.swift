@@ -7,6 +7,7 @@
 
 import SwiftUI
 import SwiftData
+import UniformTypeIdentifiers
 
 struct NodeDetailSheet: View {
     @Environment(\.dismiss) private var dismiss
@@ -250,6 +251,8 @@ struct NodeDetailSheet: View {
 struct ResourceRow: View {
     let resource: Resource
     var onRemove: () -> Void
+
+    @State private var selectedPreview: LibraryPreviewFile?
     
     private var isLocalFile: Bool {
         if !resource.attachments.isEmpty {
@@ -265,7 +268,35 @@ struct ResourceRow: View {
         if let attachment = resource.attachments.first {
             return LibraryStorage.resolvedURL(for: attachment)
         }
+        if let legacyURL = LibraryStorage.legacyResolvedURL(for: resource) {
+            return legacyURL
+        }
         return URL(string: resource.urlString)
+    }
+
+    private var previewFile: LibraryPreviewFile? {
+        if let attachment = resource.attachments.first,
+           let url = LibraryStorage.resolvedURL(for: attachment) {
+            return LibraryPreviewFile(
+                id: attachment.id,
+                title: attachment.displayName,
+                contentType: attachment.contentType,
+                url: url,
+                byteSize: attachment.byteSize
+            )
+        }
+
+        if let legacyURL = LibraryStorage.legacyResolvedURL(for: resource) {
+            return LibraryPreviewFile(
+                id: resource.id,
+                title: legacyURL.lastPathComponent,
+                contentType: UTType(filenameExtension: legacyURL.pathExtension)?.identifier ?? UTType.data.identifier,
+                url: legacyURL,
+                byteSize: nil
+            )
+        }
+
+        return nil
     }
     
     var body: some View {
@@ -324,13 +355,22 @@ struct ResourceRow: View {
             RoundedRectangle(cornerRadius: 8)
                 .stroke(SymphoTheme.dividerColor, lineWidth: 1)
         )
+        .sheet(item: $selectedPreview) { preview in
+            LibraryFilePreviewSheet(file: preview)
+        }
     }
 
     private func openResource() {
-        guard let url = destinationURL else { return }
+        if let previewFile {
+            if previewFile.isPreviewable {
+                selectedPreview = previewFile
+            } else {
+                LibraryFileActions.openExternally(previewFile.url)
+            }
+            return
+        }
 
-        #if os(macOS)
-        NSWorkspace.shared.open(url)
-        #endif
+        guard let url = destinationURL else { return }
+        LibraryFileActions.openExternally(url)
     }
 }
