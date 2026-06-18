@@ -6,6 +6,9 @@
 //
 
 import SwiftUI
+#if os(macOS)
+import AppKit
+#endif
 
 struct SymphoTheme {
     #if os(macOS)
@@ -40,6 +43,53 @@ struct SymphoTheme {
     static let controlRadius: CGFloat = 7
     static let outerPadding: CGFloat = 28
     static let sidebarWidth: CGFloat = 236
+}
+
+// MARK: - Note Typography (markdown editor only)
+
+enum SymphoNoteTypography {
+    /// Editorial serif for note body text — UI chrome stays sans-serif.
+    static let bodyFontSize: CGFloat = 17
+    static let readingLineSpacing: CGFloat = 5
+    static let editorPlaceholder = "Start writing..."
+
+    #if os(macOS)
+    static let bodyFontName = "Charter-Roman"
+
+    static var bodyFont: NSFont {
+        if let charter = NSFont(name: bodyFontName, size: bodyFontSize) {
+            return charter
+        }
+        if let serifDescriptor = NSFontDescriptor.preferredFontDescriptor(forTextStyle: .body).withDesign(.serif),
+           let serif = NSFont(descriptor: serifDescriptor, size: bodyFontSize) {
+            return serif
+        }
+        return NSFont.systemFont(ofSize: bodyFontSize)
+    }
+
+    static var placeholderAttributes: [NSAttributedString.Key: Any] {
+        [
+            .font: bodyFont,
+            .foregroundColor: NSColor.placeholderTextColor
+        ]
+    }
+    #endif
+
+    static var readingFont: Font {
+        #if os(macOS)
+        return .custom(bodyFontName, size: bodyFontSize)
+        #else
+        return .system(size: bodyFontSize, design: .serif)
+        #endif
+    }
+
+    static var previewFont: Font {
+        #if os(macOS)
+        return .custom(bodyFontName, size: 13)
+        #else
+        return .system(size: 13, design: .serif)
+        #endif
+    }
 }
 
 // MARK: - Typography
@@ -139,6 +189,32 @@ extension View {
 }
 
 // MARK: - Buttons and Controls
+
+/// Prominent liquid-glass back control for drill-down screens.
+struct SymphoGlassBackButton: View {
+    let title: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 7) {
+                Image(systemName: "chevron.left")
+                    .font(.system(size: 13, weight: .semibold))
+                Text(title)
+                    .font(.system(size: 13, weight: .semibold))
+                    .lineLimit(1)
+            }
+            .foregroundStyle(SymphoTheme.primaryText)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 9)
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .glassEffect(.regular.interactive(), in: .capsule)
+        .shadow(color: .black.opacity(0.07), radius: 10, y: 4)
+        .help("Back to \(title)")
+    }
+}
 
 /// Circular liquid-glass add control (matches Projects / Domains).
 struct SymphoGlassAddButton: View {

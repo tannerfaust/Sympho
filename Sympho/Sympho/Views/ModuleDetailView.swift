@@ -34,6 +34,7 @@ struct ModuleDetailView: View {
     @Environment(\.modelContext) private var modelContext
 
     let module: Module
+    var backTitle: String = "Back"
     var onBack: () -> Void
     var onSelectNode: (Node) -> Void
 
@@ -92,16 +93,7 @@ struct ModuleDetailView: View {
 
     private var scrollHeader: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Button(action: onBack) {
-                HStack(spacing: 6) {
-                    Image(systemName: "arrow.left")
-                        .font(.system(size: 12, weight: .semibold))
-                    Text(parentPageTitle)
-                        .font(.system(size: 12, weight: .medium))
-                }
-                .foregroundStyle(SymphoTheme.secondaryText)
-            }
-            .buttonStyle(.plain)
+            SymphoGlassBackButton(title: backTitle, action: onBack)
 
             HStack(alignment: .top, spacing: 14) {
                 Image(systemName: "square.stack.3d.up")

@@ -15,9 +15,27 @@ enum DevCaptureSettings {
     }
 }
 
+struct SymphoNavigationReturn: Equatable {
+    enum EntryKind: Equatable {
+        case domain(UUID)
+        case track(UUID)
+        case module(UUID)
+        case project(UUID)
+        case node(UUID)
+        case libraryResource(UUID)
+        case libraryTag(UUID)
+        case projectsList(UUID)
+    }
+
+    let section: NavSection
+    let label: String
+    let entryKind: EntryKind
+}
+
 @Observable
 final class AppNavigationContext {
     var sectionTitle: String = NavSection.dashboard.title
+    var returnDestination: SymphoNavigationReturn?
     var domainTitle: String?
     var trackTitle: String?
     var moduleTitle: String?

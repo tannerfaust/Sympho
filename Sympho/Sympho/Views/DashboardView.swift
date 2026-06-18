@@ -11,6 +11,10 @@ import SwiftData
 struct DashboardView: View {
     @Environment(\.modelContext) private var modelContext
     var onOpenDomain: (Domain) -> Void = { _ in }
+    var onOpenTrack: (Track) -> Void = { _ in }
+    var onOpenResource: (Resource) -> Void = { _ in }
+    var onOpenNode: (Node) -> Void = { _ in }
+    var onOpenProject: (Project) -> Void = { _ in }
 
     @Query(filter: #Predicate<Node> { $0.statusValue == "active" && !$0.isDeletedLocally },
            sort: \Node.updatedAt, order: .reverse)
@@ -20,9 +24,17 @@ struct DashboardView: View {
            sort: [SortDescriptor(\Domain.sortIndex), SortDescriptor(\Domain.title)])
     private var domains: [Domain]
 
-    @Query(filter: #Predicate<Project> { $0.isPinned && !$0.isDeletedLocally },
+    @Query(filter: #Predicate<Resource> { !$0.isDeletedLocally },
+           sort: \Resource.updatedAt, order: .reverse)
+    private var allResources: [Resource]
+
+    @Query(filter: #Predicate<Node> { !$0.isDeletedLocally },
+           sort: \Node.updatedAt, order: .reverse)
+    private var allNodes: [Node]
+
+    @Query(filter: #Predicate<Project> { !$0.isDeletedLocally },
            sort: \Project.updatedAt, order: .reverse)
-    private var pinnedProjects: [Project]
+    private var allProjects: [Project]
 
     @Query(filter: #Predicate<Track> { !$0.isDeletedLocally },
            sort: \Track.updatedAt, order: .reverse)
@@ -35,7 +47,29 @@ struct DashboardView: View {
         }
     }
 
-    @State private var selectedNodeForDetails: Node? = nil
+    private var recentItems: [HomeFeedItem] {
+        let resources = allResources
+            .filter { !$0.isPinned }
+            .map(HomeFeedItem.from(resource:))
+        let nodes = allNodes
+            .filter { !$0.isPinned && (!$0.desc.isEmpty || !$0.resources.isEmpty) }
+            .map(HomeFeedItem.from(node:))
+
+        return (resources + nodes)
+            .sorted { $0.activityDate > $1.activityDate }
+            .prefix(12)
+            .map { $0 }
+    }
+
+    private var pinnedItems: [HomeFeedItem] {
+        let resources = allResources.filter(\.isPinned).map(HomeFeedItem.from(resource:))
+        let nodes = allNodes.filter(\.isPinned).map(HomeFeedItem.from(node:))
+        let projects = allProjects.filter(\.isPinned).map(HomeFeedItem.from(project:))
+
+        return (resources + nodes + projects)
+            .sorted { $0.activityDate > $1.activityDate }
+    }
+
     @State private var captureText = ""
 
     private let domainColumns = [
@@ -50,35 +84,36 @@ struct DashboardView: View {
                 // ── 1. Hero: primary active node ────────────────────
                 if let primary = activeNodes.first {
                     HomeHeroCard(node: primary) {
-                        selectedNodeForDetails = primary
+                        openNode(primary)
                     }
                 }
 
-                // ── 2. Tracks: horizontal scroll ────────────────────
+                // ── 2. Recent ───────────────────────────────────────
+                if !recentItems.isEmpty {
+                    homeFeedSection(
+                        title: "Recent",
+                        subtitle: "Picked up where you left off",
+                        items: recentItems,
+                        showsPinBadge: false
+                    )
+                }
+
+                // ── 3. Pinned ───────────────────────────────────────
+                if !pinnedItems.isEmpty {
+                    homeFeedSection(
+                        title: "Pinned",
+                        subtitle: "\(pinnedItems.count) saved shortcut\(pinnedItems.count == 1 ? "" : "s")",
+                        items: pinnedItems,
+                        showsPinBadge: true
+                    )
+                }
+
+                // ── 4. Tracks: horizontal scroll ────────────────────
                 if !visibleTracks.isEmpty {
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 12) {
-                            ForEach(visibleTracks) { track in
-                                HomeTrackCard(track: track) {
-                                    if let domain = track.domain {
-                                        onOpenDomain(domain)
-                                    }
-                                }
-                            }
-                        }
-                    }
+                    tracksSection
                 }
 
-                // ── 3. Pinned projects ──────────────────────────────
-                if !pinnedProjects.isEmpty {
-                    VStack(alignment: .leading, spacing: 12) {
-                        ForEach(pinnedProjects) { project in
-                            HomePinnedCard(project: project)
-                        }
-                    }
-                }
-
-                // ── 4. Domains grid ─────────────────────────────────
+                // ── 5. Domains grid ─────────────────────────────────
                 if !domains.isEmpty {
                     LazyVGrid(columns: domainColumns, spacing: 14) {
                         ForEach(domains) { domain in
@@ -89,13 +124,82 @@ struct DashboardView: View {
                     }
                 }
 
-                // ── 5. Capture ──────────────────────────────────────
+                // ── 6. Capture ──────────────────────────────────────
                 capturePill
             }
             .padding(36)
         }
-        .sheet(item: $selectedNodeForDetails) { node in
-            NodeDetailSheet(node: node)
+    }
+
+    private func homeFeedSection(
+        title: String,
+        subtitle: String,
+        items: [HomeFeedItem],
+        showsPinBadge: Bool
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .editorialSubtitle()
+
+                Text(subtitle)
+                    .captionSans()
+            }
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 12) {
+                    ForEach(items) { item in
+                        HomePreviewCard(item: item, showsPinBadge: showsPinBadge) {
+                            openFeedItem(item)
+                        }
+                    }
+                }
+                .padding(.vertical, 2)
+            }
+            .scrollClipDisabled()
+        }
+    }
+
+    private func openFeedItem(_ item: HomeFeedItem) {
+        HomeFeedRecorder.markOpened(item, in: modelContext)
+
+        switch item.kind {
+        case .resource:
+            if let resource = item.resource { onOpenResource(resource) }
+        case .node:
+            if let node = item.node { openNode(node) }
+        case .project:
+            if let project = item.project { onOpenProject(project) }
+        }
+    }
+
+    private func openNode(_ node: Node) {
+        onOpenNode(node)
+    }
+
+    // MARK: - Tracks Section
+
+    private var tracksSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Tracks")
+                    .editorialSubtitle()
+
+                Text("\(visibleTracks.count) learning path\(visibleTracks.count == 1 ? "" : "s")")
+                    .captionSans()
+            }
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 12) {
+                    ForEach(visibleTracks) { track in
+                        HomeTrackCard(track: track) {
+                            onOpenTrack(track)
+                        }
+                    }
+                }
+                .padding(.vertical, 2)
+            }
+            .scrollClipDisabled()
         }
     }
 
@@ -167,10 +271,7 @@ private struct HomeHeroCard: View {
 
             // Description
             if !node.desc.isEmpty {
-                Text(node.desc)
-                    .font(.system(size: 13))
-                    .foregroundStyle(SymphoTheme.secondaryText)
-                    .lineSpacing(3)
+                SymphoNoteBody(text: node.desc, font: SymphoNoteTypography.previewFont)
                     .lineLimit(3)
             }
 
@@ -252,90 +353,78 @@ private struct HomeTrackCard: View {
     let track: Track
     let onOpen: () -> Void
 
+    @State private var isHovered = false
+
+    private var nodes: [Node] { track.allNodes }
+    private var masteredCount: Int { nodes.filter { $0.status == .mastered }.count }
+    private var progress: Double { track.progress }
+
     var body: some View {
         Button(action: onOpen) {
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 8) {
+                    if let domain = track.domain {
+                        Text(domain.title)
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(SymphoTheme.tertiaryText)
+                            .lineLimit(1)
+                    }
 
-                // Parent domain
-                if let domain = track.domain {
-                    Text(domain.title)
-                        .font(.system(size: 10))
+                    Spacer(minLength: 0)
+
+                    Image(systemName: "point.topleft.down.curvedto.point.bottomright.up")
+                        .font(.system(size: 10, weight: .semibold))
                         .foregroundStyle(SymphoTheme.tertiaryText)
-                        .lineLimit(1)
                 }
 
-                // Track title
                 Text(track.title)
                     .font(.system(size: 14, weight: .semibold))
                     .foregroundStyle(SymphoTheme.primaryText)
                     .lineLimit(2)
                     .multilineTextAlignment(.leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
 
                 Spacer(minLength: 0)
 
-                // Progress fraction
-                let nodes = track.allNodes
-                let mastered = nodes.filter { $0.status == .mastered }.count
                 if !nodes.isEmpty {
-                    Text("\(mastered)/\(nodes.count)")
-                        .font(.system(size: 11, weight: .medium, design: .monospaced))
-                        .foregroundStyle(SymphoTheme.tertiaryText)
+                    VStack(alignment: .leading, spacing: 6) {
+                        GeometryReader { geometry in
+                            ZStack(alignment: .leading) {
+                                Capsule()
+                                    .fill(SymphoTheme.dividerColor.opacity(0.55))
+
+                                Capsule()
+                                    .fill(SymphoTheme.colorMastered.opacity(0.85))
+                                    .frame(width: geometry.size.width * CGFloat(progress))
+                            }
+                        }
+                        .frame(height: 3)
+
+                        Text("\(masteredCount)/\(nodes.count) mastered")
+                            .font(.system(size: 10.5, weight: .medium, design: .monospaced))
+                            .foregroundStyle(SymphoTheme.tertiaryText)
+                    }
                 }
             }
             .frame(width: 220, alignment: .leading)
             .padding(16)
-            .frame(height: 120)
+            .frame(height: 128)
+            .background {
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(SymphoTheme.primaryCanvas)
+                    .shadow(color: .black.opacity(isHovered ? 0.1 : 0.05), radius: isHovered ? 10 : 6, y: isHovered ? 4 : 2)
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .strokeBorder(
+                                isHovered ? SymphoTheme.dividerColor.opacity(0.9) : SymphoTheme.dividerColor,
+                                lineWidth: 1
+                            )
+                    }
+            }
             .contentShape(.rect(cornerRadius: 14))
         }
         .buttonStyle(.plain)
-        .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 14))
-    }
-}
-
-// MARK: - Pinned Project Card
-
-private struct HomePinnedCard: View {
-    let project: Project
-
-    var body: some View {
-        HStack(spacing: 14) {
-            Image(systemName: "folder.fill")
-                .font(.system(size: 16, weight: .light))
-                .foregroundStyle(SymphoTheme.secondaryText)
-                .frame(width: 32, height: 32)
-                .glassEffect(.regular, in: .circle)
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(project.title)
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(SymphoTheme.primaryText)
-                    .lineLimit(1)
-
-                if !project.desc.isEmpty {
-                    Text(project.desc)
-                        .font(.system(size: 12))
-                        .foregroundStyle(SymphoTheme.secondaryText)
-                        .lineLimit(1)
-                }
-            }
-
-            Spacer(minLength: 0)
-
-            let activeCount = project.nodes.filter { !$0.isDeletedLocally && $0.status == .active }.count
-            let totalCount  = project.nodes.filter { !$0.isDeletedLocally }.count
-            if totalCount > 0 {
-                Text("\(activeCount)/\(totalCount)")
-                    .font(.system(size: 11, weight: .medium, design: .monospaced))
-                    .foregroundStyle(SymphoTheme.tertiaryText)
-            }
-
-            Image(systemName: "chevron.right")
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(SymphoTheme.tertiaryText)
-        }
-        .padding(.horizontal, 18)
-        .padding(.vertical, 14)
-        .glassEffect(.regular, in: .rect(cornerRadius: 14))
+        .onHover { isHovered = $0 }
     }
 }
 
@@ -344,6 +433,8 @@ private struct HomePinnedCard: View {
 private struct HomeDomainCard: View {
     let domain: Domain
     let onOpen: () -> Void
+
+    @State private var isHovered = false
 
     var body: some View {
         Button(action: onOpen) {
@@ -371,10 +462,22 @@ private struct HomeDomainCard: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .frame(minHeight: 110)
             .padding(20)
+            .background {
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .fill(SymphoTheme.primaryCanvas)
+                    .shadow(color: .black.opacity(isHovered ? 0.1 : 0.05), radius: isHovered ? 10 : 6, y: isHovered ? 4 : 2)
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 18, style: .continuous)
+                            .strokeBorder(
+                                isHovered ? SymphoTheme.dividerColor.opacity(0.9) : SymphoTheme.dividerColor,
+                                lineWidth: 1
+                            )
+                    }
+            }
             .contentShape(.rect(cornerRadius: 18))
         }
         .buttonStyle(.plain)
-        .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 18))
+        .onHover { isHovered = $0 }
     }
 
     private var progress: Double {

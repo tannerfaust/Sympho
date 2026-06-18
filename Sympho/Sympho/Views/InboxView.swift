@@ -642,26 +642,17 @@ private struct InboxCaptureDetailSheet: View {
                         .stroke(SymphoTheme.dividerColor, lineWidth: 1)
                 }
 
-            TextEditor(text: $editedNotes)
-                .font(.system(size: 13))
-                .scrollContentBackground(.hidden)
-                .frame(minHeight: 118)
-                .padding(8)
-                .background(SymphoTheme.elevatedCanvas.opacity(0.55), in: .rect(cornerRadius: 10))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .stroke(SymphoTheme.dividerColor, lineWidth: 1)
-                }
-                .overlay(alignment: .topLeading) {
-                    if editedNotes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        Text("Notes")
-                            .font(.system(size: 13))
-                            .foregroundStyle(SymphoTheme.tertiaryText)
-                            .padding(.horizontal, 13)
-                            .padding(.vertical, 16)
-                            .allowsHitTesting(false)
-                    }
-                }
+            MarkdownNoteEditor(
+                text: $editedNotes,
+                documentId: node.id.uuidString,
+                placeholder: "Notes"
+            )
+            .frame(minHeight: 160)
+            .background(SymphoTheme.elevatedCanvas.opacity(0.55), in: .rect(cornerRadius: 10))
+            .overlay {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .stroke(SymphoTheme.dividerColor, lineWidth: 1)
+            }
         }
     }
 

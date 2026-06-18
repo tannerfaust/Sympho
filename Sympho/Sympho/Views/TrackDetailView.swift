@@ -43,6 +43,7 @@ struct TrackDetailView: View {
     @Environment(\.modelContext) private var modelContext
 
     let track: Track
+    var backTitle: String = "Domain"
     var onBack: () -> Void
     var onSelectModule: (Module) -> Void
     var onSelectNode: (Node) -> Void
@@ -109,16 +110,7 @@ struct TrackDetailView: View {
 
     private var scrollHeader: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Button(action: onBack) {
-                HStack(spacing: 6) {
-                    Image(systemName: "arrow.left")
-                        .font(.system(size: 12, weight: .semibold))
-                    Text(track.domain?.title ?? "Domain")
-                        .font(.system(size: 12, weight: .medium))
-                }
-                .foregroundStyle(SymphoTheme.secondaryText)
-            }
-            .buttonStyle(.plain)
+            SymphoGlassBackButton(title: backTitle, action: onBack)
 
             HStack(alignment: .top, spacing: 14) {
                 Image(systemName: "point.topleft.down.curvedto.point.bottomright.up")

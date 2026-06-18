@@ -55,10 +55,29 @@ struct SymphoItemEditSheet: View {
                         .textFieldStyle(.plain)
                 }
 
-                SymphoEditorField(title: "DESCRIPTION") {
-                    TextField("Optional description…", text: $desc, axis: .vertical)
-                        .textFieldStyle(.plain)
-                        .lineLimit(2...4)
+                if case .node(let node) = subject {
+                    VStack(alignment: .leading, spacing: 7) {
+                        Text("NOTES")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(SymphoTheme.tertiaryText)
+
+                        MarkdownNoteEditor(text: $desc, documentId: node.id.uuidString)
+                            .frame(minHeight: 180)
+                            .background {
+                                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                    .fill(SymphoTheme.elevatedCanvas.opacity(0.72))
+                            }
+                            .overlay {
+                                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                    .stroke(SymphoTheme.dividerColor, lineWidth: 1)
+                            }
+                    }
+                } else {
+                    SymphoEditorField(title: "DESCRIPTION") {
+                        TextField("Optional description…", text: $desc, axis: .vertical)
+                            .textFieldStyle(.plain)
+                            .lineLimit(2...4)
+                    }
                 }
 
                 if subject.showsNodeStatus {
@@ -91,7 +110,8 @@ struct SymphoItemEditSheet: View {
         .background(SymphoTheme.primaryCanvas)
         .onAppear(perform: loadDrafts)
         #if os(macOS)
-        .frame(width: subject.showsIconPicker ? 470 : 420)
+        .frame(width: subject.showsIconPicker ? 470 : (subject.showsNodeStatus ? 480 : 420))
+        .frame(minHeight: subject.showsNodeStatus ? 520 : nil)
         #endif
     }
 

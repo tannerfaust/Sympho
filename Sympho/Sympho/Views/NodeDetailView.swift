@@ -12,29 +12,18 @@ struct NodeDetailView: View {
     @Environment(\.modelContext) private var modelContext
     
     let node: Node
+    var backTitle: String = "Back"
     var onBack: () -> Void
     
     @State private var isEditing = false
     @State private var editedTitle = ""
     @State private var editedDesc = ""
     
-    @State private var newResourceTitle = ""
-    @State private var newResourceURL = ""
-    @State private var newResourceType: ResourceType = .url
-    
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             // Navigation Bar
             HStack {
-                Button(action: onBack) {
-                    HStack(spacing: 4) {
-                        Image(systemName: "chevron.left")
-                        Text(node.module?.title ?? "Module")
-                    }
-                    .font(.caption)
-                    .foregroundColor(SymphoTheme.secondaryText)
-                }
-                .buttonStyle(.plain)
+                SymphoGlassBackButton(title: backTitle, action: onBack)
                 
                 Spacer()
                 
@@ -84,28 +73,24 @@ struct NodeDetailView: View {
                                     .cornerRadius(6)
                                     .overlay(RoundedRectangle(cornerRadius: 6).stroke(SymphoTheme.dividerColor, lineWidth: 1))
                                 
-                                TextField("Write what you need to master here...", text: $editedDesc, axis: .vertical)
-                                    .font(.system(size: 13))
-                                    .textFieldStyle(.plain)
-                                    .lineLimit(4...6)
-                                    .padding(8)
-                                    .background(SymphoTheme.elevatedCanvas.opacity(0.5))
-                                    .cornerRadius(6)
-                                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(SymphoTheme.dividerColor, lineWidth: 1))
+                                MarkdownNoteEditor(
+                                    text: $editedDesc,
+                                    documentId: node.id.uuidString,
+                                    placeholder: "Write what you need to master here..."
+                                )
+                                .frame(minHeight: 220)
+                                .background(SymphoTheme.elevatedCanvas.opacity(0.5))
+                                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                                .overlay(RoundedRectangle(cornerRadius: 6).stroke(SymphoTheme.dividerColor, lineWidth: 1))
                             } else {
                                 Text(node.title)
                                     .font(.system(size: 20, weight: .bold))
                                     .foregroundStyle(SymphoTheme.primaryText)
                                 
-                                if !node.desc.isEmpty {
-                                    Text(node.desc)
-                                        .bodySans()
-                                        .foregroundStyle(SymphoTheme.primaryText)
-                                } else {
-                                    Text("No description provided. Add details to document your learning milestones.")
-                                        .font(.system(.body, design: .default).italic())
-                                        .foregroundColor(SymphoTheme.secondaryText)
-                                }
+                                SymphoNoteBody(
+                                    text: node.desc,
+                                    placeholder: "No description provided. Add details to document your learning milestones."
+                                )
                             }
                         }
                         
@@ -193,83 +178,10 @@ struct NodeDetailView: View {
                     .frame(width: 1)
                     .ignoresSafeArea()
                 
-                // Right Column: Converged Learning Assets (40%)
+                // Right Column: Materials
                 ScrollView {
-                    VStack(alignment: .leading, spacing: SymphoTheme.sectionSpacing) {
-                        VStack(alignment: .leading, spacing: 14) {
-                            Text("Converged Assets")
-                                .editorialSubtitle()
-                            
-                            let activeResources = node.resources.filter { !$0.isDeletedLocally }
-                            if activeResources.isEmpty {
-                                Text("No materials attached yet. Link assets to support this node.")
-                                    .font(.system(size: 11))
-                                    .foregroundColor(SymphoTheme.secondaryText)
-                                    .padding(.vertical, 4)
-                            } else {
-                                VStack(spacing: 8) {
-                                    ForEach(activeResources) { res in
-                                        ResourceRow(resource: res, onRemove: {
-                                            removeResource(res)
-                                        })
-                                    }
-                                }
-                            }
-                        }
-                        
-                        MinimalDivider()
-                        
-                        // Add Asset Form
-                        VStack(alignment: .leading, spacing: 10) {
-                            Text("LINK A NEW ASSET")
-                                .font(.system(size: 10, weight: .semibold))
-                                .foregroundStyle(SymphoTheme.tertiaryText)
-                            
-                            Picker("Asset Type", selection: $newResourceType) {
-                                ForEach(ResourceType.allCases) { type in
-                                    Label(type.displayName, systemImage: type.iconName).tag(type)
-                                }
-                            }
-                            .pickerStyle(.menu)
-                            .font(.system(size: 11))
-                            
-                            TextField("Asset Title (e.g. Reference Video)", text: $newResourceTitle)
-                                .textFieldStyle(.plain)
-                                .padding(8)
-                                .background(SymphoTheme.elevatedCanvas.opacity(0.5))
-                                .cornerRadius(6)
-                                .overlay(RoundedRectangle(cornerRadius: 6).stroke(SymphoTheme.dividerColor, lineWidth: 1))
-                            
-                            TextField("URL or relative file path...", text: $newResourceURL)
-                                .textFieldStyle(.plain)
-                                .padding(8)
-                                .background(SymphoTheme.elevatedCanvas.opacity(0.5))
-                                .cornerRadius(6)
-                                .overlay(RoundedRectangle(cornerRadius: 6).stroke(SymphoTheme.dividerColor, lineWidth: 1))
-                            
-                            HStack {
-                                Spacer()
-                                Button(action: addResource) {
-                                    HStack(spacing: 4) {
-                                        Image(systemName: "link")
-                                        Text("Converge Asset")
-                                    }
-                                }
-                                .buttonStyle(SymphoPrimaryButtonStyle())
-                                .disabled(newResourceTitle.trimmingCharacters(in: .whitespaces).isEmpty || newResourceURL.trimmingCharacters(in: .whitespaces).isEmpty)
-                            }
-                        }
-                        .padding(14)
-                        .background {
-                            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                .fill(SymphoTheme.elevatedCanvas.opacity(0.4))
-                        }
-                        .overlay {
-                            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                .stroke(SymphoTheme.dividerColor, lineWidth: 1)
-                        }
-                    }
-                    .padding(SymphoTheme.outerPadding)
+                    NodeMaterialsSection(node: node)
+                        .padding(SymphoTheme.outerPadding)
                 }
                 .frame(width: 320)
             }
@@ -277,37 +189,6 @@ struct NodeDetailView: View {
         .background(SymphoTheme.primaryCanvas)
     }
     
-    // MARK: - Resource Operations
-    
-    private func addResource() {
-        let trimmedTitle = newResourceTitle.trimmingCharacters(in: .whitespacesAndNewlines)
-        let trimmedURL = newResourceURL.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedTitle.isEmpty, !trimmedURL.isEmpty else { return }
-        
-        let resource = Resource(
-            title: trimmedTitle,
-            urlString: trimmedURL,
-            resourceType: newResourceType,
-            domain: node.module?.domain ?? node.module?.track?.domain
-        )
-        
-        modelContext.insert(resource)
-        node.resources.append(resource)
-        node.isSynced = false
-        
-        try? modelContext.save()
-        
-        newResourceTitle = ""
-        newResourceURL = ""
-    }
-    
-    private func removeResource(_ resource: Resource) {
-        resource.isDeletedLocally = true
-        resource.isSynced = false
-        node.isSynced = false
-        try? modelContext.save()
-    }
-
     private func beginEditing() {
         editedTitle = node.title
         editedDesc = node.desc

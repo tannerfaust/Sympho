@@ -11,6 +11,16 @@ import SwiftData
 struct ProjectsView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(AppNavigationContext.self) private var navigationContext
+    @Binding var openProjectID: UUID?
+    var onReturnToOrigin: (SymphoNavigationReturn) -> Void = { _ in }
+
+    init(
+        openProjectID: Binding<UUID?> = .constant(nil),
+        onReturnToOrigin: @escaping (SymphoNavigationReturn) -> Void = { _ in }
+    ) {
+        self._openProjectID = openProjectID
+        self.onReturnToOrigin = onReturnToOrigin
+    }
 
     @Query(filter: #Predicate<Project> { !$0.isDeletedLocally }, sort: \Project.updatedAt, order: .reverse)
     private var projects: [Project]
@@ -28,19 +38,56 @@ struct ProjectsView: View {
     var body: some View {
         Group {
             if let selectedProject {
-                ProjectDetailView(project: selectedProject) {
-                    self.selectedProject = nil
-                }
+                ProjectDetailView(
+                    project: selectedProject,
+                    backTitle: backTitle(for: selectedProject),
+                    onBack: { handleProjectBack(selectedProject) }
+                )
             } else {
                 projectsOverview
             }
         }
-        .onAppear { syncNavigationContext() }
+        .onAppear {
+            syncNavigationContext()
+            consumeProjectDeepLink(openProjectID)
+        }
         .onChange(of: selectedProject?.id) { _, _ in syncNavigationContext() }
+        .onChange(of: openProjectID) { _, id in
+            consumeProjectDeepLink(id)
+        }
+        .onChange(of: projects.map(\.id)) { _, _ in
+            if openProjectID != nil {
+                consumeProjectDeepLink(openProjectID)
+            }
+        }
+    }
+
+    private func consumeProjectDeepLink(_ id: UUID?) {
+        guard let id, let project = projects.first(where: { $0.id == id }) else { return }
+        selectedProject = project
+        openProjectID = nil
     }
 
     private func syncNavigationContext() {
         navigationContext.updateProjectsWorkspace(project: selectedProject)
+    }
+
+    private func backTitle(for project: Project) -> String {
+        if navigationContext.returnDestination?.entryKind == .projectsList(project.id) {
+            return navigationContext.returnDestination?.label ?? "Projects"
+        }
+        return "Projects"
+    }
+
+    private func handleProjectBack(_ project: Project) {
+        if let destination = navigationContext.returnDestination,
+           destination.entryKind == .projectsList(project.id) {
+            navigationContext.returnDestination = nil
+            selectedProject = nil
+            onReturnToOrigin(destination)
+            return
+        }
+        selectedProject = nil
     }
 
     private var projectsOverview: some View {
@@ -335,6 +382,7 @@ struct ProjectDetailView: View {
     @Environment(\.modelContext) private var modelContext
 
     let project: Project
+    var backTitle: String = "Projects"
     let onBack: () -> Void
 
     @State private var selectedNode: Node?
@@ -373,14 +421,7 @@ struct ProjectDetailView: View {
 
     private var projectHeader: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Button(action: onBack) {
-                Image(systemName: "arrow.left")
-                    .font(.system(size: 12, weight: .semibold))
-                    .frame(width: 22, height: 22)
-            }
-            .buttonStyle(.glass)
-            .buttonBorderShape(.circle)
-            .help("Back to Projects")
+            SymphoGlassBackButton(title: backTitle, action: onBack)
 
             HStack(alignment: .top, spacing: 16) {
                 Image(systemName: "folder")
@@ -471,7 +512,7 @@ struct ProjectDetailView: View {
             } else {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 260), spacing: 12)], spacing: 12) {
                     ForEach(activeResources) { resource in
-                        ResourceRow(resource: resource) {
+                        NodeMaterialRow(resource: resource) {
                             resource.isDeletedLocally = true
                             resource.isSynced = false
                             markProjectChanged()
@@ -547,7 +588,7 @@ private struct ProjectNodeRow: View {
 
                         if !node.desc.isEmpty {
                             Text(node.desc)
-                                .font(.system(size: 11))
+                                .font(SymphoNoteTypography.previewFont)
                                 .foregroundStyle(SymphoTheme.secondaryText)
                                 .lineLimit(1)
                         }

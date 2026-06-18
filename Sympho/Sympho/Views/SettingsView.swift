@@ -32,6 +32,7 @@ struct SettingsView: View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 22) {
                 header
+                AIInfrastructurePanel()
                 developerSection
                 quickCaptureSection
                 libraryStorageSection
@@ -124,7 +125,7 @@ struct SettingsView: View {
 
     private var developerSection: some View {
         SettingsSection(title: "Developer", iconName: "hammer.fill") {
-            VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 14) {
                 Toggle("Developer capture", isOn: $devCaptureEnabled)
                     .toggleStyle(.switch)
                     .onChange(of: devCaptureEnabled) { _, newValue in
@@ -134,6 +135,14 @@ struct SettingsView: View {
                 Text("Shows a Dev Capture button above Capture. Log bugs, ideas, and design notes with automatic context from where you are in Sympho.")
                     .font(.system(size: 11))
                     .foregroundStyle(SymphoTheme.secondaryText)
+
+                Divider()
+
+                Text("DEV CAPTURES")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(SymphoTheme.tertiaryText)
+
+                DevCapturesSettingsPanel()
             }
         }
     }
@@ -284,7 +293,7 @@ struct SettingsView: View {
     }
 }
 
-private struct SettingsSection<Content: View>: View {
+struct SettingsSection<Content: View>: View {
     let title: String
     let iconName: String
     @ViewBuilder let content: Content

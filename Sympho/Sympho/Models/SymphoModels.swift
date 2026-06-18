@@ -549,9 +549,11 @@ final class Node: Identifiable {
     var priorityValue: String
     var isOrphan: Bool
     var captureIntentValue: String = CaptureIntent.planInbox.rawValue
+    var isPinned: Bool = false
     var masteredAt: Date?
     var createdAt: Date
     var updatedAt: Date
+    var lastOpenedAt: Date?
     
     // Relationships
     var module: Module?
@@ -623,8 +625,10 @@ final class Resource: Identifiable, Hashable {
     var urlString: String
     var fileRelativePath: String?
     var resourceTypeValue: String
+    var isPinned: Bool = false
     var createdAt: Date
     var updatedAt: Date
+    var lastOpenedAt: Date?
     
     // Relationships
     var domain: Domain?
@@ -677,6 +681,43 @@ final class Resource: Identifiable, Hashable {
     
     func hash(into hasher: inout Hasher) {
         hasher.combine(id)
+    }
+}
+
+extension Resource {
+    var youtubeThumbnailURL: URL? {
+        guard let videoID = youtubeVideoID else { return nil }
+        return URL(string: "https://img.youtube.com/vi/\(videoID)/hqdefault.jpg")
+    }
+
+    var youtubeVideoID: String? {
+        guard let url = URL(string: urlString),
+              let host = url.host?.lowercased() else {
+            return nil
+        }
+
+        if host == "youtu.be" || host.hasSuffix(".youtu.be") {
+            return url.pathComponents.dropFirst().first
+        }
+
+        guard host == "youtube.com" || host.hasSuffix(".youtube.com") else {
+            return nil
+        }
+
+        if url.path == "/watch" {
+            return URLComponents(url: url, resolvingAgainstBaseURL: false)?
+                .queryItems?
+                .first(where: { $0.name == "v" })?
+                .value
+        }
+
+        let parts = url.pathComponents.filter { $0 != "/" }
+        if let marker = parts.firstIndex(where: { $0 == "embed" || $0 == "shorts" }),
+           parts.indices.contains(marker + 1) {
+            return parts[marker + 1]
+        }
+
+        return nil
     }
 }
 

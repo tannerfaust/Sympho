@@ -36,6 +36,7 @@ private struct FilterUpdateTrigger: Equatable {
     let selectedDomainID: UUID?
     let selectedProjectID: UUID?
     let selectedTagID: UUID?
+    let selectedTagFilterID: UUID?
     let entriesCount: Int
     let nodesCount: Int
     let projectsCount: Int
@@ -43,6 +44,21 @@ private struct FilterUpdateTrigger: Equatable {
 
 struct LibraryView: View {
     var initialSearchText: String = ""
+    @Binding var openResourceID: UUID?
+    @Binding var openTagID: UUID?
+    var onReturnToOrigin: (SymphoNavigationReturn) -> Void = { _ in }
+
+    init(
+        initialSearchText: String = "",
+        openResourceID: Binding<UUID?> = .constant(nil),
+        openTagID: Binding<UUID?> = .constant(nil),
+        onReturnToOrigin: @escaping (SymphoNavigationReturn) -> Void = { _ in }
+    ) {
+        self.initialSearchText = initialSearchText
+        self._openResourceID = openResourceID
+        self._openTagID = openTagID
+        self.onReturnToOrigin = onReturnToOrigin
+    }
 
     @Query(filter: #Predicate<Resource> { !$0.isDeletedLocally }, sort: \Resource.updatedAt, order: .reverse)
     private var entries: [Resource]
@@ -66,6 +82,7 @@ struct LibraryView: View {
     private var libraryTags: [LibraryTag]
 
     @Environment(\.modelContext) private var modelContext
+    @Environment(AppNavigationContext.self) private var navigationContext
 
     @State private var selectedEntry: Resource?
     @State private var searchText = ""
@@ -73,6 +90,7 @@ struct LibraryView: View {
     @State private var selectedDomain: Domain?
     @State private var selectedProject: Project?
     @State private var selectedReadingTag: LibraryTag?
+    @State private var selectedTagFilter: LibraryTag?
     @State private var showsCreateEntry = false
     @State private var showsCompactTitle = false
     @FocusState private var isSearchFocused: Bool
@@ -81,12 +99,32 @@ struct LibraryView: View {
 
     var body: some View {
         if let selectedEntry {
-            LibraryEntryDetailView(entry: selectedEntry) {
-                self.selectedEntry = nil
-            }
+            LibraryEntryDetailView(
+                entry: selectedEntry,
+                backTitle: backTitle(for: selectedEntry),
+                onBack: { handleEntryBack(selectedEntry) }
+            )
         } else {
             overview
         }
+    }
+
+    private func backTitle(for entry: Resource) -> String {
+        if navigationContext.returnDestination?.entryKind == .libraryResource(entry.id) {
+            return navigationContext.returnDestination?.label ?? "Library"
+        }
+        return "Library"
+    }
+
+    private func handleEntryBack(_ entry: Resource) {
+        if let destination = navigationContext.returnDestination,
+           destination.entryKind == .libraryResource(entry.id) {
+            navigationContext.returnDestination = nil
+            selectedEntry = nil
+            onReturnToOrigin(destination)
+            return
+        }
+        selectedEntry = nil
     }
 
     private func createNewBlankNote() {
@@ -119,6 +157,7 @@ struct LibraryView: View {
                 header
                 searchBar
                 filterBar
+                tagFilterBanner
 
                 if filterScope == .readingList {
                     LibraryReadingListSection(
@@ -132,6 +171,8 @@ struct LibraryView: View {
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 242), spacing: 12)], spacing: 12) {
                         ForEach(cachedFilteredEntries) { entry in
                             LibraryEntryCard(entry: entry) {
+                                entry.markHomeOpened()
+                                try? modelContext.save()
                                 selectedEntry = entry
                             }
                         }
@@ -155,6 +196,7 @@ struct LibraryView: View {
             selectedDomainID: selectedDomain?.id,
             selectedProjectID: selectedProject?.id,
             selectedTagID: selectedReadingTag?.id,
+            selectedTagFilterID: selectedTagFilter?.id,
             entriesCount: entries.count,
             nodesCount: allNodes.count,
             projectsCount: projects.count
@@ -165,11 +207,85 @@ struct LibraryView: View {
             if !initialSearchText.isEmpty {
                 searchText = initialSearchText
             }
+            consumeResourceDeepLink(openResourceID)
+            consumeTagDeepLink(openTagID)
         }
         .onChange(of: initialSearchText) { _, newValue in
             guard !newValue.isEmpty else { return }
             searchText = newValue
         }
+        .onChange(of: openResourceID) { _, id in
+            consumeResourceDeepLink(id)
+        }
+        .onChange(of: openTagID) { _, id in
+            consumeTagDeepLink(id)
+        }
+        .onChange(of: entries.map(\.id)) { _, _ in
+            if openResourceID != nil {
+                consumeResourceDeepLink(openResourceID)
+            }
+        }
+        .onChange(of: libraryTags.map(\.id)) { _, _ in
+            if openTagID != nil {
+                consumeTagDeepLink(openTagID)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var tagFilterBanner: some View {
+        if let tag = selectedTagFilter {
+            HStack(spacing: 8) {
+                Image(systemName: "tag.fill")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(SymphoTheme.secondaryText)
+
+                Text("Tagged “\(tag.name)”")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(SymphoTheme.primaryText)
+
+                Spacer()
+
+                Button("Clear") {
+                    selectedTagFilter = nil
+                }
+                .buttonStyle(.plain)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(SymphoTheme.secondaryText)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(SymphoTheme.elevatedCanvas.opacity(0.72))
+            }
+            .padding(.horizontal, SymphoTheme.outerPadding)
+            .padding(.bottom, 12)
+        }
+    }
+
+    private func consumeResourceDeepLink(_ id: UUID?) {
+        guard let id, let resource = entries.first(where: { $0.id == id }) else { return }
+        resource.markHomeOpened()
+        try? modelContext.save()
+        selectedTagFilter = nil
+        searchText = ""
+        selectedEntry = resource
+        openResourceID = nil
+    }
+
+    private func consumeTagDeepLink(_ id: UUID?) {
+        guard let id, let tag = libraryTags.first(where: { $0.id == id }) else { return }
+        withAnimation(.easeInOut(duration: 0.15)) {
+            filterScope = .domains
+            selectedDomain = nil
+            selectedProject = nil
+            selectedReadingTag = nil
+            selectedTagFilter = tag
+            searchText = ""
+            selectedEntry = nil
+        }
+        openTagID = nil
     }
 
     private var libraryHeaderSubtitle: String {
@@ -237,6 +353,9 @@ struct LibraryView: View {
                             filterScope = scope
                             if scope != .readingList {
                                 selectedReadingTag = nil
+                            }
+                            if scope == .readingList {
+                                selectedTagFilter = nil
                             }
                         }
                     } label: {
@@ -413,6 +532,7 @@ struct LibraryView: View {
         
         let selectedDomainID = selectedDomain?.id
         let selectedProjectID = selectedProject?.id
+        let selectedTagFilterID = selectedTagFilter?.id
         
         // Build lookup maps to avoid traversing nested SwiftData relationships in the filter loop
         let projectDomainMap = Dictionary(uniqueKeysWithValues: projects.compactMap { project -> (UUID, UUID)? in
@@ -445,6 +565,10 @@ struct LibraryView: View {
                 $0.tags.contains { $0.name.lowercased().contains(query) }
 
             guard matchesSearch else { return false }
+
+            if let selectedTagFilterID {
+                guard $0.tags.contains(where: { $0.id == selectedTagFilterID }) else { return false }
+            }
 
             switch filterScope {
             case .domains:
@@ -566,6 +690,12 @@ private struct LibraryEntryCard: View {
         .clipShape(RoundedRectangle(cornerRadius: 17, style: .continuous))
         .onHover { isHovering = $0 }
         .contextMenu {
+            Button(entry.isPinned ? "Unpin from Home" : "Pin to Home", systemImage: entry.isPinned ? "pin.slash" : "pin") {
+                entry.isPinned.toggle()
+                entry.updatedAt = Date()
+                entry.isSynced = false
+                try? modelContext.save()
+            }
             Button("Edit", systemImage: "pencil", action: onOpen)
             Button("Delete", role: .destructive) {
                 entry.isDeletedLocally = true
@@ -601,7 +731,7 @@ private struct LibraryEntryCard: View {
             VStack(alignment: .leading, spacing: 5) {
                 if !entry.bodyText.isEmpty {
                     Text(entry.bodyText)
-                        .font(.system(size: 10))
+                        .font(SymphoNoteTypography.previewFont)
                         .foregroundStyle(SymphoTheme.secondaryText)
                         .lineSpacing(2)
                         .multilineTextAlignment(.leading)
@@ -678,6 +808,7 @@ private struct LibraryEntryDetailView: View {
     @Environment(\.modelContext) private var modelContext
 
     let entry: Resource
+    var backTitle: String = "Library"
     let onBack: () -> Void
 
     @Query(
@@ -703,8 +834,9 @@ private struct LibraryEntryDetailView: View {
     @State private var showsCompactTitle = false
     @State private var selectedFilePreview: LibraryPreviewFile?
 
-    init(entry: Resource, onBack: @escaping () -> Void) {
+    init(entry: Resource, backTitle: String = "Library", onBack: @escaping () -> Void) {
         self.entry = entry
+        self.backTitle = backTitle
         self.onBack = onBack
         _title = State(initialValue: entry.title)
         _selectedDomain = State(initialValue: entry.domain)
@@ -845,14 +977,23 @@ private struct LibraryEntryDetailView: View {
     
     private var detailHeader: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Button(action: onBack) {
-                Image(systemName: "arrow.left")
-                    .font(.system(size: 12, weight: .semibold))
-                    .frame(width: 22, height: 22)
+            HStack(spacing: 8) {
+                SymphoGlassBackButton(title: backTitle, action: onBack)
+
+                Button {
+                    entry.isPinned.toggle()
+                    entry.updatedAt = Date()
+                    entry.isSynced = false
+                    try? modelContext.save()
+                } label: {
+                    Image(systemName: entry.isPinned ? "pin.fill" : "pin")
+                        .font(.system(size: 12, weight: .semibold))
+                        .frame(width: 22, height: 22)
+                }
+                .buttonStyle(.glass)
+                .buttonBorderShape(.circle)
+                .help(entry.isPinned ? "Unpin from Home" : "Pin to Home")
             }
-            .buttonStyle(.glass)
-            .buttonBorderShape(.circle)
-            .help("Back to Library")
 
             HStack(alignment: .top, spacing: 16) {
                 Image(systemName: "books.vertical")
@@ -1164,6 +1305,7 @@ private struct CreateLibraryEntrySheet: View {
     @State private var selectedFiles: [URL] = []
     @State private var showsFileImporter = false
     @State private var importErrorMessage: String?
+    @State private var draftDocumentId = UUID().uuidString
 
     @Query(sort: \LibraryTag.name) private var allTags: [LibraryTag]
 
@@ -1271,11 +1413,8 @@ private struct CreateLibraryEntrySheet: View {
             Text("Notes")
                 .font(.system(size: 12, weight: .medium))
 
-            TextEditor(text: $bodyText)
-                .font(.system(size: 13))
-                .scrollContentBackground(.hidden)
-                .padding(8)
-                .frame(height: 104)
+            MarkdownNoteEditor(text: $bodyText, documentId: draftDocumentId)
+                .frame(minHeight: 160)
                 .librarySurface()
         }
     }
@@ -1918,108 +2057,3 @@ private extension LibraryAttachment {
         return 2
     }
 }
-
-private extension Resource {
-    var isMarkdownNote: Bool {
-        attachments.contains(where: \.isMarkdown)
-    }
-
-    var youtubeThumbnailURL: URL? {
-        guard let videoID = youtubeVideoID else { return nil }
-        return URL(string: "https://img.youtube.com/vi/\(videoID)/hqdefault.jpg")
-    }
-
-    private var youtubeVideoID: String? {
-        guard let url = URL(string: urlString),
-              let host = url.host?.lowercased() else {
-            return nil
-        }
-
-        if host == "youtu.be" || host.hasSuffix(".youtu.be") {
-            return url.pathComponents.dropFirst().first
-        }
-
-        guard host == "youtube.com" || host.hasSuffix(".youtube.com") else {
-            return nil
-        }
-
-        if url.path == "/watch" {
-            return URLComponents(url: url, resolvingAgainstBaseURL: false)?
-                .queryItems?
-                .first(where: { $0.name == "v" })?
-                .value
-        }
-
-        let parts = url.pathComponents.filter { $0 != "/" }
-        if let marker = parts.firstIndex(where: { $0 == "embed" || $0 == "shorts" }),
-           parts.indices.contains(marker + 1) {
-            return parts[marker + 1]
-        }
-
-        return nil
-    }
-}
-
-private extension Text {
-    init(markdown: String) {
-        if let attributed = try? AttributedString(markdown: markdown) {
-            self.init(attributed)
-        } else {
-            self.init(verbatim: markdown)
-        }
-    }
-}
-
-#if os(macOS)
-private struct MarkdownNoteEditor: View {
-    @Binding var text: String
-    let documentId: String
-
-    private var configuration: MarkdownEditorConfiguration {
-        var config = MarkdownEditorConfiguration.default
-        config.readingWidth = 680
-        config.textInsets = TextInsets(horizontal: 22, vertical: 22)
-        config.theme = MarkdownEditorTheme(
-            bodyText: .labelColor,
-            mutedText: .secondaryLabelColor,
-            disabledText: .tertiaryLabelColor,
-            headingMarker: .tertiaryLabelColor,
-            link: .linkColor,
-            incompleteLink: .systemBlue,
-            findMatchHighlight: .systemYellow,
-            findCurrentMatchHighlight: .systemYellow,
-            latexLightModeText: .labelColor,
-            latexDarkModeText: .labelColor,
-            strikethroughColor: .secondaryLabelColor
-        )
-        return config
-    }
-
-    var body: some View {
-        NativeTextViewWrapper(
-            text: $text,
-            configuration: configuration,
-            fontName: "SF Pro",
-            fontSize: 15,
-            documentId: documentId,
-            placeholder: NSAttributedString(
-                string: "Start writing...",
-                attributes: [
-                    .font: NSFont.systemFont(ofSize: 15),
-                    .foregroundColor: NSColor.placeholderTextColor
-                ]
-            )
-        )
-    }
-}
-#else
-private struct MarkdownNoteEditor: View {
-    @Binding var text: String
-    let documentId: String
-
-    var body: some View {
-        TextEditor(text: $text)
-            .padding(14)
-    }
-}
-#endif

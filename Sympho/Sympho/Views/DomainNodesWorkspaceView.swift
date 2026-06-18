@@ -479,64 +479,66 @@ struct DomainNodeCard: View {
     @State private var isHovering = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Button(action: onOpen) {
-                VStack(alignment: .leading, spacing: 10) {
-                    HStack(alignment: .top) {
-                        ZStack {
-                            Circle()
-                                .fill(SymphoTheme.primaryCanvas)
-                                .frame(width: 40, height: 40)
-                            Image(systemName: DomainNodeVisuals.statusIcon(node.status))
-                                .font(.system(size: 18, weight: .medium))
-                                .foregroundStyle(DomainNodeVisuals.statusColor(node.status))
-                        }
-                        .overlay {
-                            Circle()
-                                .stroke(DomainNodeVisuals.statusColor(node.status).opacity(0.35), lineWidth: 2)
-                        }
-
-                        Spacer(minLength: 0)
-
-                        SymphoOverflowMenu(onEdit: onEdit, onDelete: { softDeleteNode() })
-                    }
-
-                    Text(node.title)
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(SymphoTheme.primaryText)
-                        .lineLimit(3)
-                        .multilineTextAlignment(.leading)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-
-                    HStack(spacing: 6) {
-                        Image(systemName: DomainNodeGrouping.contextIcon(for: node))
-                            .font(.system(size: 10, weight: .semibold))
-                        Text(DomainNodeGrouping.contextLabel(for: node, domainTitle: domainTitle))
-                            .lineLimit(1)
-                    }
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(SymphoTheme.tertiaryText)
-
-                    HStack(spacing: 6) {
-                        Text(node.status.displayName)
-                            .font(.system(size: 10, weight: .semibold))
+        Button(action: onOpen) {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(alignment: .top) {
+                    ZStack {
+                        Circle()
+                            .fill(SymphoTheme.primaryCanvas)
+                            .frame(width: 40, height: 40)
+                        Image(systemName: DomainNodeVisuals.statusIcon(node.status))
+                            .font(.system(size: 18, weight: .medium))
                             .foregroundStyle(DomainNodeVisuals.statusColor(node.status))
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 4)
-                            .background(DomainNodeVisuals.statusColor(node.status).opacity(0.12), in: .capsule)
-
-                        if node.priority == .critical {
-                            Image(systemName: "exclamationmark.triangle.fill")
-                                .font(.system(size: 10))
-                                .foregroundStyle(SymphoTheme.colorCritical)
-                        }
-
-                        Spacer(minLength: 0)
                     }
+                    .overlay {
+                        Circle()
+                            .stroke(DomainNodeVisuals.statusColor(node.status).opacity(0.35), lineWidth: 2)
+                    }
+
+                    Spacer(minLength: 0)
                 }
-                .padding(14)
+
+                Text(node.title)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(SymphoTheme.primaryText)
+                    .lineLimit(3)
+                    .multilineTextAlignment(.leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                HStack(spacing: 6) {
+                    Image(systemName: DomainNodeGrouping.contextIcon(for: node))
+                        .font(.system(size: 10, weight: .semibold))
+                    Text(DomainNodeGrouping.contextLabel(for: node, domainTitle: domainTitle))
+                        .lineLimit(1)
+                }
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(SymphoTheme.tertiaryText)
+
+                HStack(spacing: 6) {
+                    Text(node.status.displayName)
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(DomainNodeVisuals.statusColor(node.status))
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(DomainNodeVisuals.statusColor(node.status).opacity(0.12), in: .capsule)
+
+                    if node.priority == .critical {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.system(size: 10))
+                            .foregroundStyle(SymphoTheme.colorCritical)
+                    }
+
+                    Spacer(minLength: 0)
+                }
             }
-            .buttonStyle(.plain)
+            .padding(14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .overlay(alignment: .topTrailing) {
+            SymphoOverflowMenu(onEdit: onEdit, onDelete: { softDeleteNode() })
+                .padding(8)
         }
         .background {
             RoundedRectangle(cornerRadius: 16, style: .continuous)

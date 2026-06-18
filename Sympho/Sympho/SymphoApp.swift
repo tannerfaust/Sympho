@@ -47,6 +47,7 @@ struct SymphoApp: App {
             rootContent
         }
         .windowStyle(.hiddenTitleBar)
+        .defaultLaunchBehavior(.presented)
         .commands {
             CommandGroup(after: .textEditing) {
                 Button("Search Sympho") {

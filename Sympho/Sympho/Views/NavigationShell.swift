@@ -84,6 +84,10 @@ struct NavigationShell: View {
     @State private var showGlobalSearch = false
     @State private var selectedSearchNode: Node?
     @State private var librarySearchText = ""
+    @State private var libraryOpenResourceID: UUID?
+    @State private var libraryOpenTagID: UUID?
+    @State private var projectsOpenProjectID: UUID?
+    @State private var domainsPendingNodeID: UUID?
     @State private var isShowingSettings = false
 
     @Query(
@@ -109,17 +113,6 @@ struct NavigationShell: View {
             DevCaptureOverlay(isPresented: $showDevCapture)
         }
         #if os(macOS)
-        .sheet(isPresented: $showGlobalSearch) {
-            GlobalSearchView(
-                onOpenNode: openSearchNode,
-                onOpenTag: { openLibrarySearch($0.name) },
-                onOpenDomain: openDomain,
-                onOpenTrack: openTrack,
-                onOpenModule: openModule,
-                onOpenProject: openProject,
-                onOpenResource: { openLibrarySearch($0.title) }
-            )
-        }
         .sheet(item: $selectedSearchNode) { node in
             NodeDetailSheet(node: node)
         }
@@ -138,7 +131,7 @@ struct NavigationShell: View {
         }
         #if os(macOS)
         .onReceive(NotificationCenter.default.publisher(for: .showGlobalSearch)) { _ in
-            showGlobalSearch = true
+            toggleGlobalSearch()
         }
         #endif
         .task {
@@ -150,25 +143,42 @@ struct NavigationShell: View {
 
     #if os(macOS)
     var macOSLayout: some View {
-        NavigationSplitView {
-            sidebar
-                .navigationSplitViewColumnWidth(
-                    min: SymphoTheme.sidebarWidth,
-                    ideal: SymphoTheme.sidebarWidth,
-                    max: 280
+        ZStack {
+            NavigationSplitView {
+                sidebar
+                    .navigationSplitViewColumnWidth(
+                        min: SymphoTheme.sidebarWidth,
+                        ideal: SymphoTheme.sidebarWidth,
+                        max: 280
+                    )
+            } detail: {
+                detailContainer
+            }
+            .navigationSplitViewStyle(.balanced)
+
+            if showGlobalSearch {
+                Color.clear
+                    .contentShape(Rectangle())
+                    .onTapGesture { showGlobalSearch = false }
+
+                GlobalSearchView(
+                    actions: globalSearchActions,
+                    onDismiss: { showGlobalSearch = false }
                 )
-        } detail: {
-            detailContainer
+                .offset(x: SymphoTheme.sidebarWidth / 2)
+                .transition(.opacity.combined(with: .scale(scale: 0.97)))
+            }
         }
-        .navigationSplitViewStyle(.balanced)
+        .animation(.snappy(duration: 0.18), value: showGlobalSearch)
     }
 
     private var sidebar: some View {
         VStack(alignment: .leading, spacing: 0) {
-            sidebarHeader
-
             ScrollView {
                 VStack(alignment: .leading, spacing: 2) {
+                    SidebarSearchRow(action: toggleGlobalSearch)
+                        .keyboardShortcut("f", modifiers: [.command])
+
                     navRow(.dashboard)
                     navRow(.inbox)
 
@@ -191,6 +201,7 @@ struct NavigationShell: View {
 
             sidebarFooter
         }
+        .padding(.top, 10)
         .frame(minWidth: SymphoTheme.sidebarWidth)
         .background(.thinMaterial)
     }
@@ -232,7 +243,6 @@ struct NavigationShell: View {
             icon: DomainIcon.validated(domain.iconName),
             indent: 0,
             isSelected: isDomainSelected(domain),
-            trailing: domainProgressLabel(domain),
             hasDisclosure: domainHasChildren(domain),
             isExpanded: isExpanded,
             titleWeight: .medium,
@@ -283,7 +293,6 @@ struct NavigationShell: View {
             icon: "square.stack.3d.up",
             indent: indent,
             isSelected: isModuleSelected(module),
-            trailing: moduleNodeLabel(module),
             onSelect: { openModule(module) }
         )
     }
@@ -327,20 +336,6 @@ struct NavigationShell: View {
         !activeTracks(in: domain).isEmpty
             || !standaloneModules(in: domain).isEmpty
             || !activeProjects(in: domain).isEmpty
-    }
-
-    private func domainProgressLabel(_ domain: Domain) -> String? {
-        let nodes = domain.allNodes
-        guard !nodes.isEmpty else { return nil }
-        let mastered = nodes.filter { $0.status == .mastered }.count
-        return "\(Int((Double(mastered) / Double(nodes.count)) * 100))%"
-    }
-
-    private func moduleNodeLabel(_ module: Module) -> String? {
-        let nodes = module.activeNodes
-        guard !nodes.isEmpty else { return nil }
-        let mastered = nodes.filter { $0.status == .mastered }.count
-        return "\(mastered)/\(nodes.count)"
     }
 
     // MARK: - Tree selection state
@@ -395,53 +390,13 @@ struct NavigationShell: View {
         }
     }
 
-    private var sidebarHeader: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            HStack {
-                Text("Sympho")
-                    .font(.system(size: 17, weight: .semibold))
-                    .foregroundStyle(SymphoTheme.primaryText)
-
-                Spacer()
-            }
-
-            Button {
-                showGlobalSearch = true
-            } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: "magnifyingglass")
-                        .foregroundStyle(SymphoTheme.tertiaryText)
-                        .font(.system(size: 13, weight: .medium))
-
-                    Text("Search everything")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(SymphoTheme.tertiaryText)
-
-                    Spacer()
-
-                    Text("⌘F")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(SymphoTheme.tertiaryText)
-                }
-                .padding(.horizontal, 11)
-                .frame(height: 34)
-                .contentShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
-            }
-            .buttonStyle(.plain)
-            .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 11))
-            .help("Search all of Sympho")
-        }
-        .padding(.horizontal, 18)
-        .padding(.top, 12)
-        .padding(.bottom, 10)
-    }
-
     private var sidebarFooter: some View {
         VStack(alignment: .leading, spacing: 12) {
             MinimalDivider()
 
             if devCaptureEnabled {
                 Button {
+                    syncNavigationContext()
                     showDevCapture = true
                 } label: {
                     HStack(spacing: 8) {
@@ -512,7 +467,13 @@ struct NavigationShell: View {
     var iOSLayout: some View {
         TabView(selection: $selectedSection) {
             NavigationStack {
-                DashboardView(onOpenDomain: openDomain)
+                DashboardView(
+                    onOpenDomain: openDomain,
+                    onOpenTrack: openTrack,
+                    onOpenResource: openLibraryResource,
+                    onOpenNode: openNode,
+                    onOpenProject: openProject
+                )
                     .toolbar {
                         ToolbarItem(placement: .navigationBarTrailing) {
                             Button(action: { showQuickCapture.toggle() }) {
@@ -533,7 +494,8 @@ struct NavigationShell: View {
                     selectedDomain: $selectedDomain,
                     selectedTrack: $selectedTrack,
                     selectedModule: $selectedModule,
-                    selectedProject: $selectedProject
+                    selectedProject: $selectedProject,
+                    pendingNodeID: $domainsPendingNodeID
                 )
             }
             .tabItem { Label(NavSection.domains.title, systemImage: NavSection.domains.iconName) }
@@ -568,7 +530,13 @@ struct NavigationShell: View {
         } else {
             switch selectedSection {
             case .dashboard:
-                DashboardView(onOpenDomain: openDomain)
+                DashboardView(
+                    onOpenDomain: openDomain,
+                    onOpenTrack: openTrack,
+                    onOpenResource: openLibraryResource,
+                    onOpenNode: openNode,
+                    onOpenProject: openProject
+                )
             case .inbox:
                 InboxView()
             case .domains:
@@ -576,23 +544,141 @@ struct NavigationShell: View {
                     selectedDomain: $selectedDomain,
                     selectedTrack: $selectedTrack,
                     selectedModule: $selectedModule,
-                    selectedProject: $selectedProject
+                    selectedProject: $selectedProject,
+                    pendingNodeID: $domainsPendingNodeID,
+                    onReturnToOrigin: returnToOrigin,
+                    onCollapseSidebar: collapseSidebarFully,
+                    onCollapseDomainInSidebar: collapseSidebarAfterDomainDismiss,
+                    onCollapseTrackInSidebar: { collapseSidebarAfterTrackDismiss($0) }
                 )
             case .projects:
-                ProjectsView()
+                ProjectsView(
+                    openProjectID: $projectsOpenProjectID,
+                    onReturnToOrigin: returnToOrigin
+                )
             case .readingList:
                 ReadingListView()
             case .planner:
                 PlannerView()
             case .library:
-                LibraryView(initialSearchText: librarySearchText)
+                LibraryView(
+                    initialSearchText: librarySearchText,
+                    openResourceID: $libraryOpenResourceID,
+                    openTagID: $libraryOpenTagID,
+                    onReturnToOrigin: returnToOrigin
+                )
             }
         }
     }
 
     private func selectSection(_ section: NavSection) {
         withAnimation(.snappy(duration: 0.18)) {
+            navigationContext.returnDestination = nil
             selectedSection = section
+            selectedDomain = nil
+            selectedTrack = nil
+            selectedModule = nil
+            selectedProject = nil
+            isShowingSettings = false
+            collapseSidebarFully()
+        }
+    }
+
+    private func setReturnFromCurrentSection(entryKind: SymphoNavigationReturn.EntryKind) {
+        guard !isShowingSettings else { return }
+        guard selectedSection != .domains else { return }
+
+        navigationContext.returnDestination = SymphoNavigationReturn(
+            section: selectedSection,
+            label: returnLabel(for: selectedSection),
+            entryKind: entryKind
+        )
+    }
+
+    private func returnLabel(for section: NavSection) -> String {
+        switch section {
+        case .dashboard: return "Home"
+        default: return section.title
+        }
+    }
+
+    private func returnToOrigin(_ destination: SymphoNavigationReturn) {
+        withAnimation(.snappy(duration: 0.18)) {
+            navigationContext.returnDestination = nil
+            selectedSection = destination.section
+            selectedDomain = nil
+            selectedTrack = nil
+            selectedModule = nil
+            selectedProject = nil
+            domainsPendingNodeID = nil
+            projectsOpenProjectID = nil
+            libraryOpenResourceID = nil
+            libraryOpenTagID = nil
+            isShowingSettings = false
+            collapseSidebarFully()
+        }
+    }
+
+    #if os(macOS)
+    private func collapseSidebarFully() {
+        expandedDomainIDs.removeAll()
+        expandedTrackIDs.removeAll()
+    }
+
+    private func collapseSidebarAfterTrackDismiss(_ track: Track?) {
+        if let track {
+            expandedTrackIDs.remove(track.id)
+        }
+    }
+
+    private func collapseSidebarAfterDomainDismiss(_ domain: Domain?) {
+        if let domain {
+            expandedDomainIDs.remove(domain.id)
+            expandedTrackIDs.removeAll()
+        }
+    }
+    #else
+    private func collapseSidebarFully() {}
+
+    private func collapseSidebarAfterTrackDismiss(_ track: Track?) {}
+
+    private func collapseSidebarAfterDomainDismiss(_ domain: Domain?) {}
+    #endif
+
+    #if os(macOS)
+    private func openSearchNode(_ node: Node) {
+        node.markHomeOpened()
+        try? modelContext.save()
+        selectedSearchNode = node
+    }
+
+    private func toggleGlobalSearch() {
+        showGlobalSearch.toggle()
+    }
+
+    private var globalSearchActions: GlobalSearchActions {
+        GlobalSearchActions(
+            openNode: openNode,
+            openTag: openLibraryTag,
+            openDomain: openDomain,
+            openTrack: openTrack,
+            openModule: openModule,
+            openProject: openProject,
+            openResource: openLibraryResource
+        )
+    }
+
+    private func openLibraryResource(_ resource: Resource) {
+        resource.markHomeOpened()
+        try? modelContext.save()
+
+        setReturnFromCurrentSection(entryKind: .libraryResource(resource.id))
+
+        withAnimation(.snappy(duration: 0.18)) {
+            librarySearchText = ""
+            libraryOpenResourceID = resource.id
+            libraryOpenTagID = nil
+            selectedSection = .library
             selectedDomain = nil
             selectedTrack = nil
             selectedModule = nil
@@ -601,10 +687,19 @@ struct NavigationShell: View {
         }
     }
 
-    #if os(macOS)
-    private func openSearchNode(_ node: Node) {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-            selectedSearchNode = node
+    private func openLibraryTag(_ tag: LibraryTag) {
+        setReturnFromCurrentSection(entryKind: .libraryTag(tag.id))
+
+        withAnimation(.snappy(duration: 0.18)) {
+            librarySearchText = ""
+            libraryOpenTagID = tag.id
+            libraryOpenResourceID = nil
+            selectedSection = .library
+            selectedDomain = nil
+            selectedTrack = nil
+            selectedModule = nil
+            selectedProject = nil
+            isShowingSettings = false
         }
     }
 
@@ -633,6 +728,8 @@ struct NavigationShell: View {
     }
 
     private func openDomain(_ domain: Domain) {
+        setReturnFromCurrentSection(entryKind: .domain(domain.id))
+
         withAnimation(.snappy(duration: 0.18)) {
             selectedSection = .domains
             selectedDomain = domain
@@ -646,8 +743,9 @@ struct NavigationShell: View {
         }
     }
 
-    #if os(macOS)
     private func openTrack(_ track: Track) {
+        setReturnFromCurrentSection(entryKind: .track(track.id))
+
         withAnimation(.snappy(duration: 0.18)) {
             selectedSection = .domains
             selectedDomain = track.domain
@@ -655,10 +753,15 @@ struct NavigationShell: View {
             selectedModule = nil
             selectedProject = nil
             isShowingSettings = false
+            #if os(macOS)
+            expandTreeFor(domain: track.domain, track: track)
+            #endif
         }
     }
 
     private func openModule(_ module: Module) {
+        setReturnFromCurrentSection(entryKind: .module(module.id))
+
         withAnimation(.snappy(duration: 0.18)) {
             selectedSection = .domains
             selectedDomain = module.resolvedDomain
@@ -666,27 +769,126 @@ struct NavigationShell: View {
             selectedModule = module
             selectedProject = nil
             isShowingSettings = false
+            #if os(macOS)
+            expandTreeFor(domain: module.resolvedDomain, track: module.track)
+            #endif
+        }
+    }
+
+    private func openNode(_ node: Node) {
+        node.markHomeOpened()
+        try? modelContext.save()
+
+        if node.module != nil || node.project != nil {
+            openNodeInWorkspace(node)
+        } else {
+            #if os(macOS)
+            openSearchNode(node)
+            #endif
+        }
+    }
+
+    private func openNodeInWorkspace(_ node: Node) {
+        setReturnFromCurrentSection(entryKind: .node(node.id))
+
+        withAnimation(.snappy(duration: 0.18)) {
+            selectedSection = .domains
+            selectedProject = node.project
+
+            if let module = node.module {
+                selectedDomain = module.resolvedDomain
+                selectedTrack = module.track
+                selectedModule = module
+                #if os(macOS)
+                expandTreeFor(domain: module.resolvedDomain, track: module.track)
+                #endif
+            } else if let project = node.project {
+                let domain = project.domain ?? project.track?.domain
+                selectedDomain = domain
+                selectedTrack = project.track
+                selectedModule = nil
+                #if os(macOS)
+                expandTreeFor(domain: domain, track: project.track)
+                #endif
+            }
+
+            isShowingSettings = false
+            domainsPendingNodeID = node.id
         }
     }
 
     private func openProject(_ project: Project) {
-        withAnimation(.snappy(duration: 0.18)) {
-            selectedSection = .domains
-            selectedDomain = project.domain ?? project.track?.domain
-            selectedTrack = project.track
-            selectedModule = nil
-            selectedProject = project
-            isShowingSettings = false
+        let domain = project.domain ?? project.track?.domain
+        if domain == nil {
+            setReturnFromCurrentSection(entryKind: .projectsList(project.id))
+        } else {
+            setReturnFromCurrentSection(entryKind: .project(project.id))
+        }
+
+        if let domain {
+            withAnimation(.snappy(duration: 0.18)) {
+                selectedSection = .domains
+                selectedDomain = domain
+                selectedTrack = project.track
+                selectedModule = nil
+                selectedProject = project
+                isShowingSettings = false
+                #if os(macOS)
+                expandTreeFor(domain: domain, track: project.track)
+                #endif
+            }
+        } else {
+            withAnimation(.snappy(duration: 0.18)) {
+                selectedSection = .projects
+                selectedDomain = nil
+                selectedTrack = nil
+                selectedModule = nil
+                selectedProject = nil
+                projectsOpenProjectID = project.id
+                isShowingSettings = false
+            }
+        }
+    }
+
+    #if os(macOS)
+    private func expandTreeFor(domain: Domain?, track: Track?) {
+        if let domain {
+            expandedDomainIDs.insert(domain.id)
+        }
+        if let track {
+            expandedTrackIDs.insert(track.id)
         }
     }
     #endif
 
     private func syncNavigationContext() {
-        navigationContext.updateShell(
-            section: selectedSection,
-            domain: selectedDomain,
-            isSettings: isShowingSettings
-        )
+        if isShowingSettings {
+            navigationContext.updateShell(
+                section: selectedSection,
+                domain: selectedDomain,
+                isSettings: true
+            )
+            return
+        }
+
+        switch selectedSection {
+        case .domains:
+            navigationContext.updateDomainWorkspace(
+                domain: selectedDomain,
+                track: selectedTrack,
+                module: selectedModule,
+                node: nil,
+                project: selectedProject
+            )
+        case .projects:
+            navigationContext.updateProjectsWorkspace(project: selectedProject)
+        default:
+            navigationContext.updateShell(
+                section: selectedSection,
+                domain: selectedDomain,
+                isSettings: false
+            )
+        }
     }
 
     private func normalizeDomainOrderIfNeeded() {
@@ -703,6 +905,43 @@ struct NavigationShell: View {
 }
 
 #if os(macOS)
+private struct SidebarSearchRow: View {
+    let action: () -> Void
+
+    @State private var isHovering = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 10) {
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundStyle(SymphoTheme.secondaryText)
+                    .frame(width: 20)
+
+                Text("Search")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(SymphoTheme.secondaryText)
+
+                Spacer(minLength: 8)
+
+                Text("⌘F")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(SymphoTheme.tertiaryText)
+            }
+            .padding(.vertical, 7)
+            .padding(.horizontal, 10)
+            .contentShape(RoundedRectangle(cornerRadius: SymphoTheme.controlRadius, style: .continuous))
+            .background {
+                RoundedRectangle(cornerRadius: SymphoTheme.controlRadius, style: .continuous)
+                    .fill(isHovering ? SymphoTheme.elevatedCanvas.opacity(0.42) : .clear)
+            }
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovering = $0 }
+        .help("Search all of Sympho")
+    }
+}
+
 private struct SidebarRow: View {
     let section: NavSection
     let isSelected: Bool

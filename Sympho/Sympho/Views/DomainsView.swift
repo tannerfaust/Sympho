@@ -23,6 +23,11 @@ struct DomainsView: View {
     @Binding var selectedTrack: Track?
     @Binding var selectedModule: Module?
     @Binding var selectedProject: Project?
+    @Binding var pendingNodeID: UUID?
+    var onReturnToOrigin: (SymphoNavigationReturn) -> Void = { _ in }
+    var onCollapseSidebar: () -> Void = {}
+    var onCollapseDomainInSidebar: (Domain) -> Void = { _ in }
+    var onCollapseTrackInSidebar: (Track) -> Void = { _ in }
     @State private var showCreateDomainSheet = false
     @State private var draggedDomain: Domain?
 
@@ -36,23 +41,31 @@ struct DomainsView: View {
         VStack(alignment: .leading, spacing: 0) {
             if let domain = selectedDomain {
                 if let node = selectedNode {
-                    NodeDetailView(node: node) {
-                        selectedNode = nil
-                    }
+                    NodeDetailView(
+                        node: node,
+                        backTitle: backTitleForNode(node),
+                        onBack: { handleNodeBack(node) }
+                    )
                 } else if let project = selectedProject {
-                    ProjectDetailView(project: project) {
-                        selectedProject = nil
-                    }
+                    ProjectDetailView(
+                        project: project,
+                        backTitle: backTitleForProject(project),
+                        onBack: { handleProjectBack(project) }
+                    )
                 } else if let module = selectedModule {
-                    ModuleDetailView(module: module, onBack: {
-                        selectedModule = nil
-                    }, onSelectNode: { node in
-                        selectedNode = node
-                    })
+                    ModuleDetailView(
+                        module: module,
+                        backTitle: backTitleForModule(module),
+                        onBack: { handleModuleBack(module) },
+                        onSelectNode: { node in
+                            selectedNode = node
+                        }
+                    )
                 } else if let track = selectedTrack {
                     TrackDetailView(
                         track: track,
-                        onBack: { selectedTrack = nil },
+                        backTitle: backTitleForTrack(track),
+                        onBack: { handleTrackBack(track) },
                         onSelectModule: { selectedModule = $0 },
                         onSelectNode: { selectedNode = $0 },
                         onSelectProject: { selectedProject = $0 }
@@ -60,7 +73,8 @@ struct DomainsView: View {
                 } else {
                     DomainDetailView(
                         domain: domain,
-                        onBack: { selectedDomain = nil },
+                        backTitle: backTitleForDomain(domain),
+                        onBack: { handleDomainBack(domain) },
                         onSelectTrack: { track in selectedTrack = track },
                         onSelectModule: { module in selectedModule = module },
                         onSelectNode: { node in selectedNode = node },
@@ -72,22 +86,42 @@ struct DomainsView: View {
             }
         }
         .onChange(of: selectedDomain?.id) { _, _ in
-            selectedNode = nil
+            if pendingNodeID == nil {
+                selectedNode = nil
+            }
+            consumePendingNodeIfNeeded()
             syncNavigationContext()
         }
         .onChange(of: selectedTrack?.id) { _, _ in
-            selectedNode = nil
+            if pendingNodeID == nil {
+                selectedNode = nil
+            }
+            consumePendingNodeIfNeeded()
             syncNavigationContext()
         }
         .onChange(of: selectedModule?.id) { _, _ in
-            selectedNode = nil
+            if pendingNodeID == nil {
+                selectedNode = nil
+            }
+            consumePendingNodeIfNeeded()
             syncNavigationContext()
         }
         .onChange(of: selectedNode?.id) { _, _ in syncNavigationContext() }
         .onChange(of: selectedProject?.id) { _, _ in syncNavigationContext() }
+        .onChange(of: pendingNodeID) { _, _ in
+            consumePendingNodeIfNeeded()
+        }
         .onAppear {
             syncNavigationContext()
+            consumePendingNodeIfNeeded()
         }
+    }
+
+    private func consumePendingNodeIfNeeded() {
+        guard let id = pendingNodeID, let domain = selectedDomain else { return }
+        guard let node = domain.allNodes.first(where: { $0.id == id }) else { return }
+        selectedNode = node
+        pendingNodeID = nil
     }
 
     private func syncNavigationContext() {
@@ -98,6 +132,77 @@ struct DomainsView: View {
             node: selectedNode,
             project: selectedProject
         )
+    }
+
+    private func consumeReturnDestinationIfNeeded(matching entryKind: SymphoNavigationReturn.EntryKind) -> Bool {
+        guard let destination = navigationContext.returnDestination,
+              destination.entryKind == entryKind else { return false }
+        navigationContext.returnDestination = nil
+        onCollapseSidebar()
+        onReturnToOrigin(destination)
+        return true
+    }
+
+    private func handleNodeBack(_ node: Node) {
+        if consumeReturnDestinationIfNeeded(matching: .node(node.id)) { return }
+        selectedNode = nil
+    }
+
+    private func handleProjectBack(_ project: Project) {
+        if consumeReturnDestinationIfNeeded(matching: .project(project.id)) { return }
+        selectedProject = nil
+    }
+
+    private func handleModuleBack(_ module: Module) {
+        if consumeReturnDestinationIfNeeded(matching: .module(module.id)) { return }
+        selectedModule = nil
+    }
+
+    private func handleTrackBack(_ track: Track) {
+        if consumeReturnDestinationIfNeeded(matching: .track(track.id)) { return }
+        onCollapseTrackInSidebar(track)
+        selectedTrack = nil
+    }
+
+    private func handleDomainBack(_ domain: Domain) {
+        if consumeReturnDestinationIfNeeded(matching: .domain(domain.id)) { return }
+        onCollapseDomainInSidebar(domain)
+        selectedDomain = nil
+    }
+
+    private func backTitleForNode(_ node: Node) -> String {
+        if navigationContext.returnDestination?.entryKind == .node(node.id) {
+            return navigationContext.returnDestination?.label ?? "Back"
+        }
+        return node.module?.title ?? node.project?.title ?? "Back"
+    }
+
+    private func backTitleForProject(_ project: Project) -> String {
+        if navigationContext.returnDestination?.entryKind == .project(project.id) {
+            return navigationContext.returnDestination?.label ?? "Back"
+        }
+        return selectedTrack?.title ?? selectedDomain?.title ?? "Back"
+    }
+
+    private func backTitleForModule(_ module: Module) -> String {
+        if navigationContext.returnDestination?.entryKind == .module(module.id) {
+            return navigationContext.returnDestination?.label ?? "Back"
+        }
+        return selectedTrack?.title ?? selectedDomain?.title ?? "Back"
+    }
+
+    private func backTitleForTrack(_ track: Track) -> String {
+        if navigationContext.returnDestination?.entryKind == .track(track.id) {
+            return navigationContext.returnDestination?.label ?? "Back"
+        }
+        return selectedDomain?.title ?? "Domains"
+    }
+
+    private func backTitleForDomain(_ domain: Domain) -> String {
+        if navigationContext.returnDestination?.entryKind == .domain(domain.id) {
+            return navigationContext.returnDestination?.label ?? "Back"
+        }
+        return "Domains"
     }
     
     // MARK: - Domains Grid List
@@ -526,6 +631,7 @@ private enum DomainWorkspaceSection: String, CaseIterable, Identifiable {
 struct DomainDetailView: View {
     @Environment(\.modelContext) private var modelContext
     let domain: Domain
+    var backTitle: String = "Domains"
     var onBack: () -> Void
     var onSelectTrack: (Track) -> Void
     var onSelectModule: (Module) -> Void
@@ -653,14 +759,7 @@ struct DomainDetailView: View {
 
     private var scrollHeader: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Button(action: onBack) {
-                Image(systemName: "arrow.left")
-                    .font(.system(size: 12, weight: .semibold))
-                    .frame(width: 22, height: 22)
-            }
-            .buttonStyle(.glass)
-            .buttonBorderShape(.circle)
-            .help("Back to Domains")
+            SymphoGlassBackButton(title: backTitle, action: onBack)
 
             HStack(alignment: .top, spacing: 14) {
                 Image(systemName: DomainIcon.validated(domain.iconName))

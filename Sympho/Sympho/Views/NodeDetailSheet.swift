@@ -7,7 +7,6 @@
 
 import SwiftUI
 import SwiftData
-import UniformTypeIdentifiers
 
 struct NodeDetailSheet: View {
     @Environment(\.dismiss) private var dismiss
@@ -18,9 +17,6 @@ struct NodeDetailSheet: View {
     @State private var isEditing = false
     @State private var editedTitle: String = ""
     @State private var editedDesc: String = ""
-    @State private var newResourceTitle: String = ""
-    @State private var newResourceURL: String = ""
-    @State private var newResourceType: ResourceType = .url
     
     var body: some View {
         NavigationStack {
@@ -34,27 +30,26 @@ struct NodeDetailSheet: View {
                                     .font(.system(.title2, design: .default))
                                     .textFieldStyle(.roundedBorder)
                                 
-                                TextEditor(text: $editedDesc)
-                                    .frame(height: 80)
-                                    .padding(4)
-                                    .overlay(
-                                        RoundedRectangle(cornerRadius: 6)
-                                            .stroke(SymphoTheme.dividerColor, lineWidth: 1)
-                                    )
+                                MarkdownNoteEditor(
+                                    text: $editedDesc,
+                                    documentId: node.id.uuidString,
+                                    placeholder: "Notes"
+                                )
+                                .frame(minHeight: 180)
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 6)
+                                        .stroke(SymphoTheme.dividerColor, lineWidth: 1)
+                                )
                             } else {
                                 Text(node.title)
                                     .font(.system(.title2, design: .default))
                                     .fontWeight(.bold)
                                     .foregroundColor(SymphoTheme.primaryText)
                                 
-                                if !node.desc.isEmpty {
-                                    Text(node.desc)
-                                        .bodySans()
-                                } else {
-                                    Text("No description provided.")
-                                        .font(.system(.body, design: .default).italic())
-                                        .foregroundColor(SymphoTheme.secondaryText)
-                                }
+                                SymphoNoteBody(
+                                    text: node.desc,
+                                    placeholder: "No description provided."
+                                )
                             }
                         }
                         
@@ -107,68 +102,7 @@ struct NodeDetailSheet: View {
                         
                         MinimalDivider()
                         
-                        // Linked Resources Section (Resource Convergence Job)
-                        VStack(alignment: .leading, spacing: 14) {
-                            Text("Converged Learning Assets")
-                                .editorialSubtitle()
-                            
-                            let activeResources = node.resources.filter { !$0.isDeletedLocally }
-                            if activeResources.isEmpty {
-                                Text("No materials attached. Save links, documents or PDFs to support your study sessions.")
-                                    .captionSans()
-                                    .padding(.vertical, 8)
-                            } else {
-                                ForEach(activeResources) { res in
-                                    ResourceRow(resource: res, onRemove: {
-                                        removeResource(res)
-                                    })
-                                }
-                            }
-                            
-                            // Add Resource Form
-                            VStack(alignment: .leading, spacing: 10) {
-                                Text("LINK NEW ASSET")
-                                    .font(.caption)
-                                    .foregroundColor(SymphoTheme.secondaryText)
-                                    .padding(.top, 8)
-                                
-                                HStack(spacing: 8) {
-                                    Picker("Type", selection: $newResourceType) {
-                                        ForEach(ResourceType.allCases) { type in
-                                            Image(systemName: type.iconName).tag(type)
-                                        }
-                                    }
-                                    .pickerStyle(.menu)
-                                    .frame(width: 80)
-                                    
-                                    TextField("Asset Title (e.g. YouTube Video)", text: $newResourceTitle)
-                                        .textFieldStyle(.roundedBorder)
-                                }
-                                
-                                HStack(spacing: 8) {
-                                    TextField("Asset URL or file location...", text: $newResourceURL)
-                                        .textFieldStyle(.roundedBorder)
-                                    
-                                    Button(action: addResource) {
-                                        Text("Add")
-                                            .foregroundColor(.white)
-                                            .padding(.horizontal, 14)
-                                            .padding(.vertical, 6)
-                                            .background(SymphoTheme.primaryAction)
-                                            .cornerRadius(6)
-                                    }
-                                    .buttonStyle(.plain)
-                                    .disabled(newResourceTitle.isEmpty || newResourceURL.isEmpty)
-                                }
-                            }
-                            .padding()
-                            .background(SymphoTheme.elevatedCanvas.opacity(0.62))
-                            .cornerRadius(SymphoTheme.cornerRadius)
-                            .overlay(
-                                RoundedRectangle(cornerRadius: SymphoTheme.cornerRadius)
-                                    .stroke(SymphoTheme.dividerColor, lineWidth: 1)
-                            )
-                        }
+                        NodeMaterialsSection(node: node)
                     }
                     .padding(SymphoTheme.outerPadding)
                 }
@@ -191,6 +125,17 @@ struct NodeDetailSheet: View {
                         }
                         .buttonStyle(.borderedProminent)
                     } else {
+                        Button {
+                            node.isPinned.toggle()
+                            node.updatedAt = Date()
+                            node.isSynced = false
+                            try? modelContext.save()
+                        } label: {
+                            Image(systemName: node.isPinned ? "pin.fill" : "pin")
+                        }
+                        .buttonStyle(.plain)
+                        .help(node.isPinned ? "Unpin from Home" : "Pin to Home")
+
                         Button("Edit Details") {
                             editedTitle = node.title
                             editedDesc = node.desc
@@ -203,7 +148,7 @@ struct NodeDetailSheet: View {
                 }
                 .padding()
             }
-            .navigationTitle("Learning Unit Workspace")
+            .navigationTitle(node.title)
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
             #endif
@@ -211,166 +156,5 @@ struct NodeDetailSheet: View {
         #if os(macOS)
         .frame(width: 520, height: 600)
         #endif
-    }
-    
-    // MARK: - Helper Methods
-    
-    private func addResource() {
-        let trimmedTitle = newResourceTitle.trimmingCharacters(in: .whitespacesAndNewlines)
-        let trimmedURL = newResourceURL.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedTitle.isEmpty, !trimmedURL.isEmpty else { return }
-        
-        let resource = Resource(
-            title: trimmedTitle,
-            urlString: trimmedURL,
-            resourceType: newResourceType,
-            domain: node.module?.domain ?? node.module?.track?.domain
-        )
-        
-        modelContext.insert(resource)
-        node.resources.append(resource)
-        node.isSynced = false
-        
-        try? modelContext.save()
-        
-        newResourceTitle = ""
-        newResourceURL = ""
-    }
-    
-    private func removeResource(_ resource: Resource) {
-        // Soft delete the resource link or mark the resource as deleted
-        resource.isDeletedLocally = true
-        resource.isSynced = false
-        node.isSynced = false
-        try? modelContext.save()
-    }
-}
-
-// MARK: - Resource Row Component
-
-struct ResourceRow: View {
-    let resource: Resource
-    var onRemove: () -> Void
-
-    @State private var selectedPreview: LibraryPreviewFile?
-    
-    private var isLocalFile: Bool {
-        if !resource.attachments.isEmpty {
-            return true
-        }
-        if let url = URL(string: resource.urlString) {
-            return url.isFileURL
-        }
-        return resource.fileRelativePath != nil
-    }
-
-    private var destinationURL: URL? {
-        if let attachment = resource.attachments.first {
-            return LibraryStorage.resolvedURL(for: attachment)
-        }
-        if let legacyURL = LibraryStorage.legacyResolvedURL(for: resource) {
-            return legacyURL
-        }
-        return URL(string: resource.urlString)
-    }
-
-    private var previewFile: LibraryPreviewFile? {
-        if let attachment = resource.attachments.first,
-           let url = LibraryStorage.resolvedURL(for: attachment) {
-            return LibraryPreviewFile(
-                id: attachment.id,
-                title: attachment.displayName,
-                contentType: attachment.contentType,
-                url: url,
-                byteSize: attachment.byteSize
-            )
-        }
-
-        if let legacyURL = LibraryStorage.legacyResolvedURL(for: resource) {
-            return LibraryPreviewFile(
-                id: resource.id,
-                title: legacyURL.lastPathComponent,
-                contentType: UTType(filenameExtension: legacyURL.pathExtension)?.identifier ?? UTType.data.identifier,
-                url: legacyURL,
-                byteSize: nil
-            )
-        }
-
-        return nil
-    }
-    
-    var body: some View {
-        HStack(spacing: 12) {
-            // Icon
-            Image(systemName: resource.resourceType.iconName)
-                .font(.system(size: 15))
-                .foregroundColor(SymphoTheme.secondaryText)
-                .frame(width: 32, height: 32)
-                .background(SymphoTheme.elevatedCanvas.opacity(0.8), in: .rect(cornerRadius: 6))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 6)
-                        .stroke(SymphoTheme.dividerColor, lineWidth: 1)
-                }
-            
-            VStack(alignment: .leading, spacing: 2) {
-                Text(resource.title)
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundColor(SymphoTheme.primaryText)
-                    .lineLimit(1)
-                
-                if isLocalFile {
-                    Text("Saved file")
-                        .font(.system(size: 10))
-                        .foregroundColor(SymphoTheme.secondaryText)
-                } else {
-                    Text(resource.urlString)
-                        .font(.system(size: 10))
-                        .foregroundColor(SymphoTheme.secondaryText)
-                        .lineLimit(1)
-                }
-            }
-            
-            Spacer()
-            
-            HStack(spacing: 8) {
-                Image(systemName: "arrow.up.right")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(SymphoTheme.secondaryText)
-                    .frame(width: 24, height: 24)
-                
-                Button(action: onRemove) {
-                    Image(systemName: "trash")
-                        .font(.system(size: 11))
-                        .foregroundColor(SymphoTheme.colorCritical)
-                }
-                .buttonStyle(.plain)
-            }
-        }
-        .contentShape(Rectangle())
-        .onTapGesture(perform: openResource)
-        .padding(10)
-        .background(SymphoTheme.elevatedCanvas.opacity(0.4))
-        .cornerRadius(8)
-        .overlay(
-            RoundedRectangle(cornerRadius: 8)
-                .stroke(SymphoTheme.dividerColor, lineWidth: 1)
-        )
-        .sheet(item: $selectedPreview) { preview in
-            LibraryFilePreviewSheet(file: preview)
-        }
-    }
-
-    private func openResource() {
-        if let previewFile {
-            if previewFile.isPreviewable {
-                selectedPreview = previewFile
-            } else {
-                LibraryFileActions.openExternally(previewFile.url)
-            }
-            return
-        }
-
-        guard let url = destinationURL else { return }
-        LibraryFileActions.openExternally(url)
     }
 }

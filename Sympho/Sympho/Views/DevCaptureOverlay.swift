@@ -17,6 +17,7 @@ struct DevCaptureOverlay: View {
     @State private var bodyText = ""
     @State private var kind: DevCaptureKind = .improvement
     @State private var assignee: DevCaptureAssignee = .cursor
+    @State private var saveErrorMessage: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -96,6 +97,12 @@ struct DevCaptureOverlay: View {
             HStack {
                 Spacer()
 
+                if let saveErrorMessage {
+                    Text(saveErrorMessage)
+                        .font(.system(size: 11))
+                        .foregroundStyle(SymphoTheme.colorCritical)
+                }
+
                 Button("Cancel") {
                     dismiss()
                 }
@@ -153,7 +160,15 @@ struct DevCaptureOverlay: View {
         )
 
         modelContext.insert(capture)
-        try? modelContext.save()
-        dismiss()
+
+        do {
+            try modelContext.save()
+            saveErrorMessage = nil
+            isPresented = false
+            dismiss()
+        } catch {
+            saveErrorMessage = "Could not save capture."
+            print("Dev capture save failed: \(error.localizedDescription)")
+        }
     }
 }
