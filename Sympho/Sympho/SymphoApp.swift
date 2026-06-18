@@ -47,7 +47,6 @@ struct SymphoApp: App {
             rootContent
         }
         .windowStyle(.hiddenTitleBar)
-        .defaultLaunchBehavior(.suppressed)
 
         MenuBarExtra {
             MenuBarCaptureMenu()
