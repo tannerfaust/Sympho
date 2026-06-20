@@ -118,13 +118,20 @@ struct QuickCaptureLaunchConfiguration: Codable, Hashable {
     var moduleID: UUID?
     var projectID: UUID?
 
-    init(intent: CaptureIntent, route: CaptureRoute) {
+    var initialFilePaths: [String] = []
+
+    init(intent: CaptureIntent, route: CaptureRoute, initialFileURLs: [URL] = []) {
         intentRawValue = intent.rawValue
         routeKindRawValue = route.kind.rawValue
         domainID = route.domain?.id
         trackID = route.track?.id
         moduleID = route.module?.id
         projectID = route.project?.id
+        initialFilePaths = initialFileURLs.map(\.path)
+    }
+
+    var initialFileURLs: [URL] {
+        initialFilePaths.map { URL(fileURLWithPath: $0) }
     }
 
     var intent: CaptureIntent {

@@ -436,7 +436,9 @@ private struct AddNodeMaterialSheet: View {
             }
         }
         .padding(22)
+        #if os(macOS)
         .frame(width: 460)
+        #endif
         .background(SymphoTheme.primaryCanvas)
     }
 

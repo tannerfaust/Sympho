@@ -45,7 +45,7 @@ enum NavSection: String, CaseIterable, Identifiable {
 
     var iconName: String {
         switch self {
-        case .dashboard: return "sparkle.magnifyingglass"
+        case .dashboard: return "house"
         case .inbox: return "tray"
         case .domains: return "books.vertical"
         case .projects: return "folder"
@@ -80,9 +80,12 @@ struct NavigationShell: View {
     @State private var expandedDomainIDs: Set<UUID> = []
     @State private var expandedTrackIDs: Set<UUID> = []
     @State private var showQuickCapture = false
+    @State private var quickCapturePendingFiles: [URL] = []
+    @State private var isGlobalFileDropTarget = false
     @State private var showDevCapture = false
     @State private var showGlobalSearch = false
     @State private var selectedSearchNode: Node?
+    @State private var selectedResourceSheet: Resource?
     @State private var librarySearchText = ""
     @State private var libraryOpenResourceID: UUID?
     @State private var libraryOpenTagID: UUID?
@@ -107,16 +110,25 @@ struct NavigationShell: View {
             #endif
         }
         .sheet(isPresented: $showQuickCapture) {
-            QuickCaptureOverlay(isPresented: $showQuickCapture)
+            QuickCaptureOverlay(
+                isPresented: $showQuickCapture,
+                initialFileURLs: quickCapturePendingFiles
+            )
+        }
+        .onChange(of: showQuickCapture) { _, isPresented in
+            if !isPresented {
+                quickCapturePendingFiles = []
+            }
         }
         .sheet(isPresented: $showDevCapture) {
             DevCaptureOverlay(isPresented: $showDevCapture)
         }
-        #if os(macOS)
         .sheet(item: $selectedSearchNode) { node in
             NodeDetailSheet(node: node)
         }
-        #endif
+        .sheet(item: $selectedResourceSheet) { resource in
+            ResourceDetailSheet(resource: resource)
+        }
         .onAppear {
             syncNavigationContext()
         }
@@ -132,6 +144,11 @@ struct NavigationShell: View {
         #if os(macOS)
         .onReceive(NotificationCenter.default.publisher(for: .showGlobalSearch)) { _ in
             toggleGlobalSearch()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .openQuickCaptureWithFiles)) { notification in
+            if let urls = notification.object as? [URL] {
+                openQuickCaptureWithFiles(urls)
+            }
         }
         #endif
         .task {
@@ -168,7 +185,18 @@ struct NavigationShell: View {
                 .offset(x: SymphoTheme.sidebarWidth / 2)
                 .transition(.opacity.combined(with: .scale(scale: 0.97)))
             }
+
+            if isGlobalFileDropTarget {
+                GlobalCaptureDropOverlay()
+                    .zIndex(999)
+            }
         }
+        .background {
+            GlobalCaptureFileDropLayer(isTargeted: $isGlobalFileDropTarget) { urls in
+                openQuickCaptureWithFiles(urls)
+            }
+        }
+        .animation(.snappy(duration: 0.16), value: isGlobalFileDropTarget)
         .animation(.snappy(duration: 0.18), value: showGlobalSearch)
     }
 
@@ -176,6 +204,9 @@ struct NavigationShell: View {
         VStack(alignment: .leading, spacing: 0) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 2) {
+                    SidebarTodayPlanCard()
+                        .padding(.bottom, 10)
+
                     SidebarSearchRow(action: toggleGlobalSearch)
                         .keyboardShortcut("f", modifiers: [.command])
 
@@ -415,6 +446,7 @@ struct NavigationShell: View {
             }
 
             Button {
+                quickCapturePendingFiles = []
                 showQuickCapture.toggle()
             } label: {
                 HStack(spacing: 8) {
@@ -645,33 +677,11 @@ struct NavigationShell: View {
     private func collapseSidebarAfterDomainDismiss(_ domain: Domain?) {}
     #endif
 
-    #if os(macOS)
-    private func openSearchNode(_ node: Node) {
-        node.markHomeOpened()
-        try? modelContext.save()
-        selectedSearchNode = node
-    }
-
-    private func toggleGlobalSearch() {
-        showGlobalSearch.toggle()
-    }
-
-    private var globalSearchActions: GlobalSearchActions {
-        GlobalSearchActions(
-            openNode: openNode,
-            openTag: openLibraryTag,
-            openDomain: openDomain,
-            openTrack: openTrack,
-            openModule: openModule,
-            openProject: openProject,
-            openResource: openLibraryResource
-        )
-    }
-
     private func openLibraryResource(_ resource: Resource) {
         resource.markHomeOpened()
         try? modelContext.save()
 
+        #if os(macOS)
         setReturnFromCurrentSection(entryKind: .libraryResource(resource.id))
 
         withAnimation(.snappy(duration: 0.18)) {
@@ -685,6 +695,41 @@ struct NavigationShell: View {
             selectedProject = nil
             isShowingSettings = false
         }
+        #else
+        // iOS: open the resource in place as a sheet rather than jumping to the
+        // Library tab (which lives in the "More" overflow on iPhone).
+        selectedResourceSheet = resource
+        #endif
+    }
+
+    #if os(macOS)
+    private func openSearchNode(_ node: Node) {
+        node.markHomeOpened()
+        try? modelContext.save()
+        selectedSearchNode = node
+    }
+
+    private func toggleGlobalSearch() {
+        showGlobalSearch.toggle()
+    }
+
+    private func openQuickCaptureWithFiles(_ urls: [URL]) {
+        let fileURLs = CaptureFileDropLoader.normalizedFileURLs(urls)
+        guard !fileURLs.isEmpty else { return }
+        quickCapturePendingFiles = fileURLs
+        showQuickCapture = true
+    }
+
+    private var globalSearchActions: GlobalSearchActions {
+        GlobalSearchActions(
+            openNode: openNode,
+            openTag: openLibraryTag,
+            openDomain: openDomain,
+            openTrack: openTrack,
+            openModule: openModule,
+            openProject: openProject,
+            openResource: openLibraryResource
+        )
     }
 
     private func openLibraryTag(_ tag: LibraryTag) {
@@ -779,13 +824,16 @@ struct NavigationShell: View {
         node.markHomeOpened()
         try? modelContext.save()
 
+        #if os(macOS)
         if node.module != nil || node.project != nil {
             openNodeInWorkspace(node)
         } else {
-            #if os(macOS)
             openSearchNode(node)
-            #endif
         }
+        #else
+        // iOS: open the node in place as a sheet rather than jumping to another tab.
+        selectedSearchNode = node
+        #endif
     }
 
     private func openNodeInWorkspace(_ node: Node) {
@@ -1099,12 +1147,13 @@ private struct SidebarTreeRow: View {
                 Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
                     .font(.system(size: 9, weight: .semibold))
                     .foregroundStyle(SymphoTheme.tertiaryText)
-                    .frame(width: 14, height: 18)
+                    .frame(width: 28, height: 28)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .accessibilityLabel(isExpanded ? "Collapse" : "Expand")
         } else {
-            Color.clear.frame(width: 14, height: 18)
+            Color.clear.frame(width: 28, height: 28)
         }
     }
 

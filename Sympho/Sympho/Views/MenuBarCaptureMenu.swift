@@ -186,7 +186,8 @@ struct QuickCaptureWindow: View {
         QuickCaptureOverlay(
             isPresented: $isPresented,
             initialIntent: initialIntent,
-            initialRoute: initialRoute
+            initialRoute: initialRoute,
+            initialFileURLs: configuration?.initialFileURLs ?? []
         )
         .onChange(of: isPresented) { _, newValue in
             if !newValue {

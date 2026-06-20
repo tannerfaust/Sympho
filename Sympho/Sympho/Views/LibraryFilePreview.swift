@@ -6,9 +6,9 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
+import PDFKit
 #if os(macOS)
 import AppKit
-import PDFKit
 #endif
 
 struct LibraryPreviewFile: Identifiable, Hashable {
@@ -95,7 +95,9 @@ struct LibraryFilePreviewSheet: View {
             previewBody
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+        #if os(macOS)
         .frame(minWidth: 780, minHeight: 620)
+        #endif
         .background(SymphoTheme.primaryCanvas)
     }
 
@@ -284,16 +286,12 @@ private struct LibraryPDFPreview: View {
             .background(SymphoTheme.elevatedCanvas.opacity(0.42))
 
             ZStack {
-                #if os(macOS)
                 LibraryPDFKitView(
                     url: file.url,
                     command: $command,
                     loadError: $loadError,
                     pageCount: $pageCount
                 )
-                #else
-                LibraryGenericFilePreview(file: file)
-                #endif
 
                 if let loadError {
                     LibraryPreviewErrorView(message: loadError)
@@ -303,8 +301,7 @@ private struct LibraryPDFPreview: View {
     }
 }
 
-#if os(macOS)
-private struct LibraryPDFKitView: NSViewRepresentable {
+private struct LibraryPDFKitView: PlatformViewRepresentable {
     let url: URL
     @Binding var command: LibraryPDFCommand?
     @Binding var loadError: String?
@@ -314,7 +311,7 @@ private struct LibraryPDFKitView: NSViewRepresentable {
         Coordinator()
     }
 
-    func makeNSView(context: Context) -> PDFView {
+    private func makePDFView() -> PDFView {
         let pdfView = PDFView()
         pdfView.displayMode = .singlePageContinuous
         pdfView.displayDirection = .vertical
@@ -324,7 +321,7 @@ private struct LibraryPDFKitView: NSViewRepresentable {
         return pdfView
     }
 
-    func updateNSView(_ pdfView: PDFView, context: Context) {
+    private func sync(_ pdfView: PDFView, context: Context) {
         context.coordinator.loadIfNeeded(
             url: url,
             into: pdfView,
@@ -338,9 +335,16 @@ private struct LibraryPDFKitView: NSViewRepresentable {
         }
     }
 
+    #if os(macOS)
+    func makeNSView(context: Context) -> PDFView { makePDFView() }
+    func updateNSView(_ pdfView: PDFView, context: Context) { sync(pdfView, context: context) }
+    #else
+    func makeUIView(context: Context) -> PDFView { makePDFView() }
+    func updateUIView(_ pdfView: PDFView, context: Context) { sync(pdfView, context: context) }
+    #endif
+
     final class Coordinator {
         var currentURL: URL?
-        var scopedAccess: LibraryStorageAccess?
         var lastCommandID: UUID?
 
         func loadIfNeeded(
@@ -352,15 +356,12 @@ private struct LibraryPDFKitView: NSViewRepresentable {
             guard currentURL != url else { return }
 
             currentURL = url
-            scopedAccess = LibraryStorage.scopedAccess(forResolvedURL: url)
 
-            guard FileManager.default.isReadableFile(atPath: url.path) else {
-                pdfView.document = nil
-                publish(pageCount: 0, loadError: "The PDF file is missing or not readable.", pageCountBinding: pageCount, errorBinding: loadError)
-                return
-            }
-
-            guard let document = PDFDocument(url: url) else {
+            // PDFKit can lazily read a URL after this update pass has returned. Loading
+            // the bytes while the workspace permission is active avoids intermittent
+            // sandbox failures when PDFKit later renders or searches another page.
+            guard let data = LibraryStorage.data(at: url),
+                  let document = PDFDocument(data: data) else {
                 pdfView.document = nil
                 publish(pageCount: 0, loadError: "Sympho could not load this PDF.", pageCountBinding: pageCount, errorBinding: loadError)
                 return
@@ -412,23 +413,19 @@ private struct LibraryPDFKitView: NSViewRepresentable {
         }
     }
 }
-#endif
 
 private struct LibraryImagePreviewContent: View {
     let file: LibraryPreviewFile
 
-    #if os(macOS)
-    @State private var image: NSImage?
-    #endif
+    @State private var image: PlatformImage?
     @State private var errorMessage: String?
 
     var body: some View {
         ZStack {
             SymphoTheme.secondarySurface.opacity(0.36)
 
-            #if os(macOS)
             if let image {
-                Image(nsImage: image)
+                Image(platformImage: image)
                     .resizable()
                     .scaledToFit()
                     .padding(18)
@@ -437,21 +434,16 @@ private struct LibraryImagePreviewContent: View {
             } else {
                 ProgressView()
             }
-            #else
-            LibraryGenericFilePreview(file: file)
-            #endif
         }
-        #if os(macOS)
         .task(id: file.url) {
             guard let data = LibraryStorage.data(at: file.url),
-                  let loadedImage = NSImage(data: data) else {
+                  let loadedImage = PlatformImage(data: data) else {
                 errorMessage = "Sympho could not load this image."
                 return
             }
 
             image = loadedImage
         }
-        #endif
     }
 }
 
@@ -499,7 +491,6 @@ private struct LibraryTextPreviewContent: View {
     }
 
     private func loadText() {
-        #if os(macOS)
         let access = LibraryStorage.scopedAccess(forResolvedURL: file.url)
         defer {
             withExtendedLifetime(access) {}
@@ -517,9 +508,6 @@ private struct LibraryTextPreviewContent: View {
         } catch {
             errorMessage = "Sympho could not load this text file."
         }
-        #else
-        errorMessage = "Preview is not available on this platform."
-        #endif
     }
 }
 

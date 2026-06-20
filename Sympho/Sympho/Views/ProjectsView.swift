@@ -350,7 +350,9 @@ private struct CreateProjectSheet: View {
             }
         }
         .padding(22)
+        #if os(macOS)
         .frame(width: 500)
+        #endif
         .background(SymphoTheme.primaryCanvas)
     }
 
@@ -778,7 +780,9 @@ private struct ProjectEditorSheet<Content: View>: View {
             }
         }
         .padding(22)
+        #if os(macOS)
         .frame(width: 500)
+        #endif
         .background(SymphoTheme.primaryCanvas)
     }
 }

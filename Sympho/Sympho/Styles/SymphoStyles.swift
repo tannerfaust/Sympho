@@ -200,13 +200,20 @@ struct SymphoGlassBackButton: View {
             HStack(spacing: 7) {
                 Image(systemName: "chevron.left")
                     .font(.system(size: 13, weight: .semibold))
+                #if os(macOS)
                 Text(title)
                     .font(.system(size: 13, weight: .semibold))
                     .lineLimit(1)
+                #endif
             }
             .foregroundStyle(SymphoTheme.primaryText)
+            #if os(macOS)
             .padding(.horizontal, 14)
             .padding(.vertical, 9)
+            #else
+            // iOS: a plain circular "go back" chevron, no destination label.
+            .frame(width: 38, height: 38)
+            #endif
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
@@ -292,6 +299,19 @@ struct SymphoIconButtonStyle: ButtonStyle {
                 RoundedRectangle(cornerRadius: SymphoTheme.controlRadius, style: .continuous)
                     .fill(configuration.isPressed ? SymphoTheme.elevatedCanvas.opacity(0.78) : .clear)
             }
+    }
+}
+
+// MARK: - Flow layout
+
+/// Lays subviews left-to-right, wrapping to new rows when width runs out.
+/// Keeps chip rows (status, priority, tags) from overflowing narrow screens.
+struct FlowChips<Content: View>: View {
+    var spacing: CGFloat = 8
+    @ViewBuilder var content: Content
+
+    var body: some View {
+        FlowLayout(spacing: spacing) { content }
     }
 }
 

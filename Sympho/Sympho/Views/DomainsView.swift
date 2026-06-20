@@ -593,6 +593,67 @@ private struct DomainDropDelegate: DropDelegate {
 
 // MARK: - Domain Workspace
 
+// MARK: - Content layout switching
+
+enum DomainContentLayout: String, CaseIterable, Identifiable {
+    case grid
+    case list
+
+    var id: String { rawValue }
+
+    var iconName: String {
+        switch self {
+        case .grid: return "square.grid.2x2"
+        case .list: return "list.bullet"
+        }
+    }
+
+    var label: String {
+        switch self {
+        case .grid: return "Grid"
+        case .list: return "List"
+        }
+    }
+}
+
+/// Compact segmented control for switching a section between grid and list.
+struct DomainLayoutPicker: View {
+    @Binding var layout: DomainContentLayout
+
+    var body: some View {
+        HStack(spacing: 2) {
+            ForEach(DomainContentLayout.allCases) { option in
+                Button {
+                    withAnimation(.snappy(duration: 0.16)) { layout = option }
+                } label: {
+                    Image(systemName: option.iconName)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(layout == option ? SymphoTheme.primaryText : SymphoTheme.tertiaryText)
+                        .frame(width: 30, height: 24)
+                        .background {
+                            if layout == option {
+                                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                    .fill(SymphoTheme.primaryCanvas)
+                            }
+                        }
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help(option.label)
+            }
+        }
+        .padding(2)
+        .background {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(SymphoTheme.elevatedCanvas.opacity(0.6))
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(SymphoTheme.dividerColor, lineWidth: 1)
+        }
+    }
+}
+
 private enum DomainWorkspaceSection: String, CaseIterable, Identifiable {
     case overview
     case tracks
@@ -654,8 +715,13 @@ struct DomainDetailView: View {
     @State private var editActiveNode = false
     @State private var editNodeTarget: Node?
 
+    @State private var tracksLayout: DomainContentLayout = .grid
+    @State private var modulesLayout: DomainContentLayout = .grid
+    @State private var resourcesLayout: DomainContentLayout = .grid
+    @State private var draggedTrackID: UUID?
+
     private var activeTracks: [Track] {
-        domain.tracks.filter { !$0.isDeletedLocally }
+        domain.tracks.filter { !$0.isDeletedLocally }.roadmapSorted()
     }
 
     private var activeStandaloneModules: [Module] {
@@ -1006,11 +1072,6 @@ struct DomainDetailView: View {
     private var nodesContent: some View {
         VStack(alignment: .leading, spacing: 14) {
             sectionHeader(title: "Nodes", showsAdd: false, addAction: {})
-
-            LiquidGlassPromptBanner(
-                domain: domain,
-                onNodeCreated: { onSelectNode($0) }
-            )
 
             DomainNodesWorkspaceView(
                 domain: domain,

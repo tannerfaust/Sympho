@@ -6,9 +6,9 @@
 import SwiftUI
 import SwiftData
 import UniformTypeIdentifiers
+import QuickLookThumbnailing
 #if os(macOS)
 import AppKit
-import QuickLookThumbnailing
 #endif
 
 // MARK: - Feed Item
@@ -384,17 +384,16 @@ private struct HomePreviewBadge: View {
     }
 }
 
-#if os(macOS)
 private struct HomeRemoteThumbnail: View {
     let url: URL
     let fallbackIcon: String
 
-    @State private var image: NSImage?
+    @State private var image: PlatformImage?
 
     var body: some View {
         Group {
             if let image {
-                Image(nsImage: image)
+                Image(platformImage: image)
                     .resizable()
                     .scaledToFill()
             } else {
@@ -412,14 +411,14 @@ private struct HomeRemoteThumbnail: View {
 private struct HomeAttachmentThumbnail: View {
     let attachment: HomeDisplayAttachment
 
-    @State private var thumbnail: NSImage?
+    @State private var thumbnail: PlatformImage?
 
     var body: some View {
         ZStack {
             SymphoTheme.secondarySurface.opacity(0.55)
 
             if let thumbnail {
-                Image(nsImage: thumbnail)
+                Image(platformImage: thumbnail)
                     .resizable()
                     .scaledToFill()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -436,7 +435,6 @@ private struct HomeAttachmentThumbnail: View {
         }
     }
 }
-#endif
 
 // MARK: - Attachments & Thumbnails
 
@@ -464,13 +462,12 @@ struct HomeDisplayAttachment: Identifiable {
     }
 }
 
-#if os(macOS)
 @MainActor
 private final class HomeRemoteThumbnailCache {
     static let shared = HomeRemoteThumbnailCache()
 
-    private let cache = NSCache<NSURL, NSImage>()
-    private var inFlight: [URL: Task<NSImage?, Never>] = [:]
+    private let cache = NSCache<NSURL, PlatformImage>()
+    private var inFlight: [URL: Task<PlatformImage?, Never>] = [:]
     private lazy var session: URLSession = {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.httpMaximumConnectionsPerHost = 4
@@ -482,13 +479,13 @@ private final class HomeRemoteThumbnailCache {
         cache.countLimit = 32
     }
 
-    func image(for url: URL) async -> NSImage? {
+    func image(for url: URL) async -> PlatformImage? {
         if let cached = cache.object(forKey: url as NSURL) { return cached }
         if let task = inFlight[url] { return await task.value }
 
-        let task = Task { () -> NSImage? in
+        let task = Task { () -> PlatformImage? in
             guard let (data, _) = try? await session.data(from: url),
-                  let image = NSImage(data: data) else { return nil }
+                  let image = PlatformImage(data: data) else { return nil }
             return image
         }
         inFlight[url] = task
@@ -503,14 +500,14 @@ private final class HomeRemoteThumbnailCache {
 private final class HomeThumbnailCache {
     static let shared = HomeThumbnailCache()
 
-    private let cache = NSCache<NSURL, NSImage>()
-    private var requests: [URL: Task<NSImage?, Never>] = [:]
+    private let cache = NSCache<NSURL, PlatformImage>()
+    private var requests: [URL: Task<PlatformImage?, Never>] = [:]
 
     private init() {
         cache.countLimit = 64
     }
 
-    func thumbnail(for url: URL, contentType: String) async -> NSImage? {
+    func thumbnail(for url: URL, contentType: String) async -> PlatformImage? {
         if let cached = cache.object(forKey: url as NSURL) { return cached }
         if let request = requests[url] { return await request.value }
 
@@ -522,15 +519,12 @@ private final class HomeThumbnailCache {
         return image
     }
 
-    private func generateThumbnail(for url: URL, contentType: String) async -> NSImage? {
-        guard FileManager.default.isReadableFile(atPath: url.path) else { return nil }
-
+    private func generateThumbnail(for url: URL, contentType: String) async -> PlatformImage? {
         let type = UTType(contentType) ?? UTType(filenameExtension: url.pathExtension)
         if type?.conforms(to: .image) == true {
             return LibraryStorage.withWorkspaceAccess {
-                guard let data = try? Data(contentsOf: url, options: [.mappedIfSafe]),
-                      let image = NSImage(data: data) else { return nil }
-                return image
+                guard let data = try? Data(contentsOf: url, options: [.mappedIfSafe]) else { return nil }
+                return symphoDownsampledImage(data: data, maxPixelSize: 420)
             }
         }
 
@@ -539,21 +533,23 @@ private final class HomeThumbnailCache {
         }
 
         return await withCheckedContinuation { continuation in
-            LibraryStorage.withWorkspaceAccess {
-                let request = QLThumbnailGenerator.Request(
-                    fileAt: url,
-                    size: CGSize(width: 420, height: 240),
-                    scale: NSScreen.main?.backingScaleFactor ?? 2,
-                    representationTypes: .thumbnail
-                )
-                QLThumbnailGenerator.shared.generateBestRepresentation(for: request) { thumbnail, _ in
-                    continuation.resume(returning: thumbnail?.nsImage)
+            // Keep the security-scoped workspace permission active for Quick Look's
+            // entire asynchronous read, not only while scheduling the request.
+            let access = LibraryStorage.scopedAccess(forResolvedURL: url)
+            let request = QLThumbnailGenerator.Request(
+                fileAt: url,
+                size: CGSize(width: 420, height: 240),
+                scale: PlatformScreen.scale,
+                representationTypes: .thumbnail
+            )
+            QLThumbnailGenerator.shared.generateBestRepresentation(for: request) { thumbnail, _ in
+                withExtendedLifetime(access) {
+                    continuation.resume(returning: thumbnail?.platformImage)
                 }
             }
         }
     }
 }
-#endif
 
 // MARK: - Model Helpers
 

@@ -191,7 +191,6 @@ struct DomainNodesWorkspaceView: View {
 
         newNodeTitle = ""
         showInlineAddNode = false
-        onSelectNode(newNode)
     }
 
     private var targetModuleForNewNode: Module? {

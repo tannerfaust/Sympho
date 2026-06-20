@@ -12,9 +12,33 @@ enum LibraryStorage {
     private static let workspaceStorageKind = "workspace"
     private static let internalStorageKind = "internal"
 
+    // Resolving a security-scoped bookmark touches the filesystem and the sandbox
+    // daemon, so it is far too slow to repeat on every access. SwiftUI reads
+    // `workspaceURL` from inside list/grid card bodies (via `resolvedURL`), which
+    // re-evaluate on render, hover, and scroll — without this cache that storm of
+    // synchronous resolutions freezes the UI. The cache is keyed on the exact
+    // stored bookmark `Data`, so `setWorkspace`/`clearWorkspace` invalidate it
+    // automatically. Guarded by a lock because thumbnail generation reads it off
+    // the main thread.
+    private static let cacheLock = NSLock()
+    private static var cachedWorkspace: (bookmark: Data, url: URL)?
+
     static var workspaceURL: URL? {
         #if os(macOS)
-        guard let data = UserDefaults.standard.data(forKey: bookmarkKey) else { return nil }
+        guard let data = UserDefaults.standard.data(forKey: bookmarkKey) else {
+            cacheLock.lock()
+            cachedWorkspace = nil
+            cacheLock.unlock()
+            return nil
+        }
+
+        cacheLock.lock()
+        if let cached = cachedWorkspace, cached.bookmark == data {
+            let url = cached.url
+            cacheLock.unlock()
+            return url
+        }
+        cacheLock.unlock()
 
         var isStale = false
         guard let url = try? URL(
@@ -23,12 +47,22 @@ enum LibraryStorage {
             relativeTo: nil,
             bookmarkDataIsStale: &isStale
         ) else {
+            cacheLock.lock()
+            cachedWorkspace = nil
+            cacheLock.unlock()
             return nil
         }
 
         if isStale {
             try? setWorkspace(url)
         }
+
+        // Re-read so the cache key matches whatever is now persisted (a stale
+        // bookmark was just refreshed by `setWorkspace`).
+        let storedBookmark = UserDefaults.standard.data(forKey: bookmarkKey) ?? data
+        cacheLock.lock()
+        cachedWorkspace = (storedBookmark, url)
+        cacheLock.unlock()
 
         return url
         #else

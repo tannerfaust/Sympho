@@ -30,12 +30,21 @@ struct SymphoApp: App {
                 PlannerWeeklyBlock.self,
                 PlannerEvent.self,
                 PlannerDayNote.self,
-                DevCapture.self
+                DevCapture.self,
+                MCPChangeSet.self,
+                MCPMutation.self
             ])
-            let config = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
+            let inMemory = ProcessInfo.processInfo.environment["SYMPHO_IN_MEMORY_STORE"] == "1"
+            let config = ModelConfiguration(schema: schema, isStoredInMemoryOnly: inMemory)
             container = try ModelContainer(for: schema, configurations: [config])
             SymphoProductionDataSanitizer.runIfNeeded(in: container.mainContext)
             EnglishC2GrammarSeed.runIfNeeded(in: container.mainContext)
+            LLMCourseSeed.runIfNeeded(in: container.mainContext)
+            ComputerScienceSeed.runIfNeeded(in: container.mainContext)
+            RoboticsEngineeringSeed.runIfNeeded(in: container.mainContext)
+            #if os(macOS)
+            LocalMCPServer.shared.configure(container: container)
+            #endif
         } catch {
             fatalError("Could not initialize SwiftData ModelContainer: \(error.localizedDescription)")
         }

@@ -141,6 +141,7 @@ struct DomainRoadmapView: View {
     var onSelectModule: (Module) -> Void
 
     @State private var expandedTrackIDs: Set<UUID> = []
+    @State private var didRestoreExpansion = false
     @State private var addingTrack = false
     @State private var addingModuleTrackID: UUID?
     @State private var addingStandaloneModule = false
@@ -202,7 +203,10 @@ struct DomainRoadmapView: View {
                 RoadmapAddButton(title: "Add track", action: beginAddingTrack)
             }
         }
-        .onAppear(perform: seedExpansionIfNeeded)
+        .onAppear {
+            restoreExpansionStateIfNeeded()
+            normalizeSortIndicesIfNeeded()
+        }
         .sheet(item: $editTarget) { target in
             SymphoItemEditSheet(subject: target.subject) {
                 editTarget = nil
@@ -262,16 +266,18 @@ struct DomainRoadmapView: View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .top, spacing: 10) {
                 Button {
-                    withAnimation(.snappy(duration: 0.15)) { toggleTrack(track.id) }
+                    toggleTrack(track.id)
                 } label: {
                     Image(systemName: "chevron.right")
                         .font(.system(size: 11, weight: .bold))
                         .foregroundStyle(SymphoTheme.secondaryText)
                         .rotationEffect(.degrees(isExpanded ? 90 : 0))
-                        .frame(width: 24, height: 24)
+                        .frame(width: 28, height: 28)
+                        .contentShape(Circle())
                         .glassEffect(.regular, in: .circle)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel(isExpanded ? "Collapse track" : "Expand track")
 
                 Button(action: { onSelectTrack(track) }) {
                     HStack(alignment: .top, spacing: 12) {
@@ -443,11 +449,32 @@ struct DomainRoadmapView: View {
 
     // MARK: - State
 
-    private func seedExpansionIfNeeded() {
-        if expandedTrackIDs.isEmpty {
-            expandedTrackIDs = Set(sortedTracks.map(\.id))
+    private var expansionStorageKey: String {
+        "roadmap.expandedTrackIDs.\(domain.id.uuidString)"
+    }
+
+    private var expansionInitializedKey: String {
+        "roadmap.expansionInitialized.\(domain.id.uuidString)"
+    }
+
+    private func restoreExpansionStateIfNeeded() {
+        guard !didRestoreExpansion else { return }
+        didRestoreExpansion = true
+
+        if UserDefaults.standard.bool(forKey: expansionInitializedKey),
+           let stored = UserDefaults.standard.array(forKey: expansionStorageKey) as? [String] {
+            expandedTrackIDs = Set(stored.compactMap(UUID.init(uuidString:)))
+            return
         }
-        normalizeSortIndicesIfNeeded()
+
+        expandedTrackIDs = Set(sortedTracks.map(\.id))
+        persistExpansionState()
+        UserDefaults.standard.set(true, forKey: expansionInitializedKey)
+    }
+
+    private func persistExpansionState() {
+        UserDefaults.standard.set(expandedTrackIDs.map(\.uuidString), forKey: expansionStorageKey)
+        UserDefaults.standard.set(true, forKey: expansionInitializedKey)
     }
 
     private func toggleTrack(_ id: UUID) {
@@ -457,6 +484,7 @@ struct DomainRoadmapView: View {
             } else {
                 expandedTrackIDs.insert(id)
             }
+            persistExpansionState()
         }
     }
 
@@ -469,6 +497,7 @@ struct DomainRoadmapView: View {
         cancelComposer()
         addingModuleTrackID = track.id
         expandedTrackIDs.insert(track.id)
+        persistExpansionState()
     }
 
     private func beginAddingStandaloneModule() {
@@ -493,6 +522,7 @@ struct DomainRoadmapView: View {
         touchDomain()
         try? modelContext.save()
         expandedTrackIDs.insert(track.id)
+        persistExpansionState()
         cancelComposer()
     }
 

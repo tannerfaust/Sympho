@@ -72,6 +72,7 @@ struct QuickCaptureOverlay: View {
     @Binding var isPresented: Bool
     var initialIntent: CaptureIntent?
     var initialRoute: CaptureRoute?
+    var initialFileURLs: [URL] = []
 
     @State private var textInput: String = ""
     @State private var captureIntent: CaptureIntent = .planInbox
@@ -101,13 +102,22 @@ struct QuickCaptureOverlay: View {
     init(
         isPresented: Binding<Bool>,
         initialIntent: CaptureIntent? = nil,
-        initialRoute: CaptureRoute? = nil
+        initialRoute: CaptureRoute? = nil,
+        initialFileURLs: [URL] = []
     ) {
         _isPresented = isPresented
         self.initialIntent = initialIntent
         self.initialRoute = initialRoute
-        _captureIntent = State(initialValue: initialIntent ?? .planInbox)
-        _route = State(initialValue: initialIntent == .planInbox ? .inbox : (initialRoute ?? .inbox))
+        self.initialFileURLs = initialFileURLs
+
+        let resolvedIntent: CaptureIntent = {
+            if let initialIntent { return initialIntent }
+            if !initialFileURLs.isEmpty { return .learningMaterial }
+            return .planInbox
+        }()
+
+        _captureIntent = State(initialValue: resolvedIntent)
+        _route = State(initialValue: resolvedIntent == .planInbox ? .inbox : (initialRoute ?? .inbox))
     }
 
     var body: some View {
@@ -179,6 +189,10 @@ struct QuickCaptureOverlay: View {
             }
         } message: {
             Text(importErrorMessage ?? "")
+        }
+        .onAppear {
+            guard !initialFileURLs.isEmpty, attachedFiles.isEmpty else { return }
+            addFiles(initialFileURLs)
         }
     }
 
@@ -332,25 +346,7 @@ struct QuickCaptureOverlay: View {
     }
 
     private func handleDrop(_ providers: [NSItemProvider]) -> Bool {
-        let group = DispatchGroup()
-        var urls: [URL] = []
-
-        for provider in providers {
-            group.enter()
-            provider.loadDataRepresentation(forTypeIdentifier: UTType.fileURL.identifier) { data, _ in
-                defer { group.leave() }
-                guard
-                    let data,
-                    let string = String(data: data, encoding: .utf8),
-                    let url = URL(string: string)
-                else {
-                    return
-                }
-                urls.append(url)
-            }
-        }
-
-        group.notify(queue: .main) {
+        CaptureFileDropLoader.load(from: providers) { urls in
             addFiles(urls)
         }
         return true

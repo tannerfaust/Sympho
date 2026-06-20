@@ -33,6 +33,9 @@ struct SettingsView: View {
             LazyVStack(alignment: .leading, spacing: 22) {
                 header
                 AIInfrastructurePanel()
+                #if os(macOS)
+                LocalMCPSettingsPanel()
+                #endif
                 developerSection
                 quickCaptureSection
                 libraryStorageSection

@@ -135,6 +135,44 @@ enum ResourceType: String, Codable, CaseIterable, Identifiable {
     }
 }
 
+/// Workflow status for a Library entry: To Review → Reading → Done, plus Archived.
+enum LibraryStatus: String, Codable, CaseIterable, Identifiable {
+    case toReview = "to_review"
+    case reading = "reading"
+    case done = "done"
+    case archived = "archived"
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .toReview: return "To Review"
+        case .reading: return "Reading"
+        case .done: return "Done"
+        case .archived: return "Archived"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .toReview: return "tray"
+        case .reading: return "book"
+        case .done: return "checkmark.circle.fill"
+        case .archived: return "archivebox"
+        }
+    }
+
+    /// Order used for status sorting and the filter chips.
+    var sortRank: Int {
+        switch self {
+        case .toReview: return 0
+        case .reading: return 1
+        case .done: return 2
+        case .archived: return 3
+        }
+    }
+}
+
 enum CaptureIntent: String, Codable, CaseIterable, Identifiable {
     case planInbox = "plan_inbox"
     case learningMaterial = "learning_material"
@@ -626,6 +664,8 @@ final class Resource: Identifiable, Hashable {
     var fileRelativePath: String?
     var resourceTypeValue: String
     var isPinned: Bool = false
+    var statusValue: String = LibraryStatus.toReview.rawValue
+    var sortIndex: Int = 0
     var createdAt: Date
     var updatedAt: Date
     var lastOpenedAt: Date?
@@ -647,7 +687,20 @@ final class Resource: Identifiable, Hashable {
         get { ResourceType(rawValue: resourceTypeValue) ?? .note }
         set { resourceTypeValue = newValue.rawValue }
     }
-    
+
+    var libraryStatus: LibraryStatus {
+        get { LibraryStatus(rawValue: statusValue) ?? .toReview }
+        set { statusValue = newValue.rawValue }
+    }
+
+    /// Updates the workflow status and marks the entry for sync.
+    func setLibraryStatus(_ status: LibraryStatus) {
+        guard libraryStatus != status else { return }
+        libraryStatus = status
+        updatedAt = Date()
+        isSynced = false
+    }
+
     init(id: UUID = UUID(), title: String, bodyText: String = "", urlString: String = "", fileRelativePath: String? = nil, resourceType: ResourceType = .note, domain: Domain? = nil) {
         self.id = id
         self.title = title
@@ -726,6 +779,7 @@ final class LibraryTag: Identifiable {
     @Attribute(.unique) var id: UUID
     var name: String
     var createdAt: Date
+    var isDeletedLocally: Bool = false
 
     @Relationship(inverse: \Resource.tags) var resources: [Resource] = []
     @Relationship(inverse: \ReadingListItem.tags) var readingItems: [ReadingListItem] = []
@@ -734,6 +788,7 @@ final class LibraryTag: Identifiable {
         self.id = id
         self.name = name.trimmingCharacters(in: .whitespacesAndNewlines)
         self.createdAt = Date()
+        self.isDeletedLocally = false
     }
 }
 
@@ -743,6 +798,7 @@ final class ReadingListGroup: Identifiable {
     var title: String
     var sortIndex: Int = 0
     var createdAt: Date
+    var isDeletedLocally: Bool = false
 
     @Relationship(deleteRule: .nullify, inverse: \ReadingListItem.group) var items: [ReadingListItem] = []
 
@@ -751,6 +807,7 @@ final class ReadingListGroup: Identifiable {
         self.title = title.trimmingCharacters(in: .whitespacesAndNewlines)
         self.sortIndex = sortIndex
         self.createdAt = Date()
+        self.isDeletedLocally = false
     }
 }
 
@@ -838,6 +895,33 @@ final class ReadingListItem: Identifiable {
 
 // MARK: - Planner
 
+enum PlannerTargetKind: String, Codable, CaseIterable, Identifiable {
+    case domain = "domain"
+    case project = "project"
+    case reading = "reading"
+    case library = "library"
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .domain: return "Domain"
+        case .project: return "Project"
+        case .reading: return "Book"
+        case .library: return "Library"
+        }
+    }
+
+    var iconName: String {
+        switch self {
+        case .domain: return "books.vertical"
+        case .project: return "folder"
+        case .reading: return "book.closed"
+        case .library: return "books.vertical.fill"
+        }
+    }
+}
+
 enum PlannerBlockKind: String, Codable, CaseIterable, Identifiable {
     case study = "study"
     case training = "training"
@@ -873,14 +957,61 @@ final class PlannerWeeklyBlock: Identifiable {
     var startMinute: Int
     var endMinute: Int
     var sortIndex: Int = 0
+    var targetKindValue: String = PlannerTargetKind.domain.rawValue
+    var linkedDomainID: UUID?
+    var linkedProjectID: UUID?
+    var linkedReadingItemID: UUID?
+    var linkedResourceID: UUID?
+    var durationMinutes: Int = 60
     var createdAt: Date
     var updatedAt: Date
+    var isDeletedLocally: Bool = false
 
     var kind: PlannerBlockKind {
         get { PlannerBlockKind(rawValue: kindValue) ?? .study }
         set { kindValue = newValue.rawValue }
     }
 
+    var targetKind: PlannerTargetKind {
+        get { PlannerTargetKind(rawValue: targetKindValue) ?? .domain }
+        set { targetKindValue = newValue.rawValue }
+    }
+
+    init(
+        id: UUID = UUID(),
+        weekday: Int,
+        targetKind: PlannerTargetKind,
+        domain: Domain? = nil,
+        project: Project? = nil,
+        readingItem: ReadingListItem? = nil,
+        resource: Resource? = nil,
+        durationMinutes: Int = 60,
+        sortIndex: Int = 0
+    ) {
+        self.id = id
+        self.weekday = weekday
+        self.targetKindValue = targetKind.rawValue
+        self.linkedDomainID = domain?.id
+        self.linkedProjectID = project?.id
+        self.linkedReadingItemID = readingItem?.id
+        self.linkedResourceID = resource?.id
+        self.durationMinutes = durationMinutes
+        self.title = domain?.title
+            ?? project?.title
+            ?? readingItem?.title
+            ?? resource?.title
+            ?? ""
+        self.notes = ""
+        self.kindValue = PlannerBlockKind.study.rawValue
+        self.startMinute = durationMinutes
+        self.endMinute = 0
+        self.sortIndex = sortIndex
+        self.createdAt = Date()
+        self.updatedAt = Date()
+        self.isDeletedLocally = false
+    }
+
+    /// Legacy initializer kept for existing stored rows.
     init(
         id: UUID = UUID(),
         title: String,
@@ -899,8 +1030,15 @@ final class PlannerWeeklyBlock: Identifiable {
         self.startMinute = startMinute
         self.endMinute = endMinute
         self.sortIndex = sortIndex
+        self.targetKindValue = PlannerTargetKind.domain.rawValue
+        self.linkedDomainID = nil
+        self.linkedProjectID = nil
+        self.linkedReadingItemID = nil
+        self.linkedResourceID = nil
+        self.durationMinutes = max(15, endMinute - startMinute)
         self.createdAt = Date()
         self.updatedAt = Date()
+        self.isDeletedLocally = false
     }
 }
 
@@ -947,12 +1085,14 @@ final class PlannerDayNote: Identifiable {
     @Attribute(.unique) var dayKey: String
     var text: String
     var updatedAt: Date
+    var isDeletedLocally: Bool = false
 
     init(id: UUID = UUID(), dayKey: String, text: String = "") {
         self.id = id
         self.dayKey = dayKey
         self.text = text
         self.updatedAt = Date()
+        self.isDeletedLocally = false
     }
 }
 
@@ -975,6 +1115,7 @@ final class LibraryAttachment: Identifiable {
     var remoteStorageKey: String?
     var syncStateValue: String?
     var createdAt: Date
+    var isDeletedLocally: Bool = false
     var resource: Resource?
 
     var syncState: LibraryAttachmentSyncState {
@@ -1004,6 +1145,7 @@ final class LibraryAttachment: Identifiable {
         self.remoteStorageKey = remoteStorageKey
         self.syncStateValue = syncState.rawValue
         self.createdAt = Date()
+        self.isDeletedLocally = false
         self.resource = resource
     }
 
@@ -1055,6 +1197,7 @@ enum DevCaptureKind: String, Codable, CaseIterable, Identifiable {
 
 enum DevCaptureAssignee: String, Codable, CaseIterable, Identifiable {
     case claude
+    case codex
     case gemini
     case cursor
     case copilot
@@ -1064,10 +1207,61 @@ enum DevCaptureAssignee: String, Codable, CaseIterable, Identifiable {
     var displayName: String {
         switch self {
         case .claude: return "Claude"
+        case .codex: return "Codex"
         case .gemini: return "Gemini"
         case .cursor: return "Cursor"
         case .copilot: return "Copilot"
         }
+    }
+}
+
+// MARK: - Local MCP audit
+
+@Model
+final class MCPChangeSet: Identifiable {
+    @Attribute(.unique) var id: UUID
+    var toolName: String
+    var requestID: String
+    var idempotencyKey: String?
+    var clientName: String
+    var createdAt: Date
+    var completedAt: Date?
+    var resultJSON: String
+    var errorMessage: String?
+    var undoneAt: Date?
+    @Relationship(deleteRule: .cascade, inverse: \MCPMutation.changeSet) var mutations: [MCPMutation] = []
+
+    init(id: UUID = UUID(), toolName: String, requestID: String, idempotencyKey: String? = nil, clientName: String) {
+        self.id = id
+        self.toolName = toolName
+        self.requestID = requestID
+        self.idempotencyKey = idempotencyKey
+        self.clientName = clientName
+        self.createdAt = Date()
+        self.resultJSON = "{}"
+    }
+}
+
+@Model
+final class MCPMutation: Identifiable {
+    @Attribute(.unique) var id: UUID
+    var sequence: Int
+    var entityType: String
+    var entityID: UUID
+    var action: String
+    var beforeJSON: String?
+    var afterJSON: String?
+    var changeSet: MCPChangeSet?
+
+    init(id: UUID = UUID(), sequence: Int, entityType: String, entityID: UUID, action: String, beforeJSON: String? = nil, afterJSON: String? = nil, changeSet: MCPChangeSet? = nil) {
+        self.id = id
+        self.sequence = sequence
+        self.entityType = entityType
+        self.entityID = entityID
+        self.action = action
+        self.beforeJSON = beforeJSON
+        self.afterJSON = afterJSON
+        self.changeSet = changeSet
     }
 }
 

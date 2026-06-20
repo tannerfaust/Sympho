@@ -6,21 +6,20 @@
 import Foundation
 import SwiftUI
 
-struct PlannerTimedSlot: Identifiable, Sendable {
+struct PlannerStudyEntry: Identifiable, Sendable {
     let id: UUID
     let title: String
-    let notes: String
-    let kind: PlannerBlockKind
-    let startMinute: Int
-    let endMinute: Int
+    let targetKind: PlannerTargetKind
+    let durationMinutes: Int
+    let iconName: String
 }
 
-struct PlannerDayAgenda: Identifiable, Sendable {
+struct PlannerDayPlan: Identifiable, Sendable {
     var id: String { dayKey }
     let date: Date
     let dayKey: String
     let weekday: Int
-    let slots: [PlannerTimedSlot]
+    let entries: [PlannerStudyEntry]
 }
 
 enum PlannerLogic {
@@ -36,71 +35,157 @@ enum PlannerLogic {
         return w == 1 ? 7 : w - 1
     }
 
-    static func weekInterval(containing date: Date) -> (start: Date, end: Date) {
+    static func daysInCurrentWeek(containing date: Date = Date()) -> [Date] {
         var cal = calendar
         cal.firstWeekday = 2
         let start = cal.dateInterval(of: .weekOfYear, for: date)?.start ?? calendar.startOfDay(for: date)
-        let end = cal.date(byAdding: .day, value: 7, to: start) ?? start
-        return (start, end)
-    }
-
-    static func daysInWeek(containing date: Date) -> [Date] {
-        let start = weekInterval(containing: date).start
         return (0..<7).compactMap { calendar.date(byAdding: .day, value: $0, to: start) }
     }
 
-    static func formatTime(minutes: Int) -> String {
-        let h = minutes / 60
-        let m = minutes % 60
-        var comps = DateComponents()
-        comps.hour = h
-        comps.minute = m
-        let d = calendar.date(from: comps) ?? Date()
-        return d.formatted(date: .omitted, time: .shortened)
+    static func formatDuration(minutes: Int) -> String {
+        let clamped = max(15, minutes)
+        if clamped < 60 { return "\(clamped)m" }
+        let hours = clamped / 60
+        let remainder = clamped % 60
+        if remainder == 0 { return "\(hours)h" }
+        return "\(hours)h \(remainder)m"
     }
 
-    static func buildDayAgenda(date: Date, weeklyBlocks: [PlannerWeeklyBlock]) -> PlannerDayAgenda {
+    static func resolveTitle(
+        for block: PlannerWeeklyBlock,
+        domains: [Domain],
+        projects: [Project],
+        readingItems: [ReadingListItem],
+        resources: [Resource]
+    ) -> String {
+        if block.targetKind == .domain,
+           let id = block.linkedDomainID,
+           let domain = domains.first(where: { $0.id == id }) {
+            return domain.title
+        }
+        if block.targetKind == .project,
+           let id = block.linkedProjectID,
+           let project = projects.first(where: { $0.id == id }) {
+            return project.title
+        }
+        if block.targetKind == .reading,
+           let id = block.linkedReadingItemID,
+           let item = readingItems.first(where: { $0.id == id }) {
+            return item.title
+        }
+        if block.targetKind == .library,
+           let id = block.linkedResourceID,
+           let resource = resources.first(where: { $0.id == id }) {
+            return resource.title
+        }
+        let trimmed = block.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? "Untitled" : trimmed
+    }
+
+    static func resolveIconName(
+        for block: PlannerWeeklyBlock,
+        resources: [Resource]
+    ) -> String {
+        if block.targetKind == .library,
+           let id = block.linkedResourceID,
+           let resource = resources.first(where: { $0.id == id }) {
+            return resource.resourceType.iconName
+        }
+        return block.targetKind.iconName
+    }
+
+    static func resolveEntry(
+        for block: PlannerWeeklyBlock,
+        domains: [Domain],
+        projects: [Project],
+        readingItems: [ReadingListItem],
+        resources: [Resource]
+    ) -> PlannerStudyEntry {
+        PlannerStudyEntry(
+            id: block.id,
+            title: resolveTitle(
+                for: block,
+                domains: domains,
+                projects: projects,
+                readingItems: readingItems,
+                resources: resources
+            ),
+            targetKind: block.targetKind,
+            durationMinutes: block.durationMinutes > 0 ? block.durationMinutes : max(15, block.endMinute - block.startMinute),
+            iconName: resolveIconName(for: block, resources: resources)
+        )
+    }
+
+    static func buildDayPlan(
+        date: Date,
+        weeklyBlocks: [PlannerWeeklyBlock],
+        domains: [Domain],
+        projects: [Project],
+        readingItems: [ReadingListItem],
+        resources: [Resource]
+    ) -> PlannerDayPlan {
         let weekday = isoWeekday(for: date)
         let dayBlocks = weeklyBlocks
             .filter { $0.weekday == weekday }
             .sorted {
-                if $0.startMinute != $1.startMinute { return $0.startMinute < $1.startMinute }
-                return $0.sortIndex < $1.sortIndex
+                if $0.sortIndex != $1.sortIndex { return $0.sortIndex < $1.sortIndex }
+                return $0.createdAt < $1.createdAt
             }
 
-        let slots = dayBlocks.map { block in
-            PlannerTimedSlot(
-                id: block.id,
-                title: block.title,
-                notes: block.notes,
-                kind: block.kind,
-                startMinute: block.startMinute,
-                endMinute: block.endMinute
+        let entries = dayBlocks.map {
+            resolveEntry(
+                for: $0,
+                domains: domains,
+                projects: projects,
+                readingItems: readingItems,
+                resources: resources
             )
         }
 
-        return PlannerDayAgenda(
+        return PlannerDayPlan(
             date: date,
             dayKey: dayKey(for: date),
             weekday: weekday,
-            slots: slots
+            entries: entries
         )
     }
 
-    static func buildWeekAgendas(containing date: Date, weeklyBlocks: [PlannerWeeklyBlock]) -> [PlannerDayAgenda] {
-        daysInWeek(containing: date).map { buildDayAgenda(date: $0, weeklyBlocks: weeklyBlocks) }
+    static func buildCurrentWeekPlans(
+        weeklyBlocks: [PlannerWeeklyBlock],
+        domains: [Domain],
+        projects: [Project],
+        readingItems: [ReadingListItem],
+        resources: [Resource],
+        referenceDate: Date = Date()
+    ) -> [PlannerDayPlan] {
+        daysInCurrentWeek(containing: referenceDate).map {
+            buildDayPlan(
+                date: $0,
+                weeklyBlocks: weeklyBlocks,
+                domains: domains,
+                projects: projects,
+                readingItems: readingItems,
+                resources: resources
+            )
+        }
     }
 
-    static func casualTodayPrompt(for date: Date) -> String {
-        let prompts = [
-            "What's the vibe for learning today?",
-            "Anything small you want to explore?",
-            "What feels worth your attention today?",
-            "A light plan beats no plan.",
-            "What would make today feel good?"
-        ]
-        let day = calendar.ordinality(of: .day, in: .year, for: date) ?? 0
-        return prompts[day % prompts.count]
+    static func todayPlan(
+        weeklyBlocks: [PlannerWeeklyBlock],
+        domains: [Domain],
+        projects: [Project],
+        readingItems: [ReadingListItem],
+        resources: [Resource],
+        referenceDate: Date = Date()
+    ) -> PlannerDayPlan {
+        buildDayPlan(
+            date: referenceDate,
+            weeklyBlocks: weeklyBlocks,
+            domains: domains,
+            projects: projects,
+            readingItems: readingItems,
+            resources: resources
+        )
     }
 
     private static let shortWeekdays = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
@@ -108,13 +193,5 @@ enum PlannerLogic {
     static func weekdayLabel(_ weekday: Int) -> String {
         guard (1...7).contains(weekday) else { return "?" }
         return shortWeekdays[weekday - 1]
-    }
-}
-
-func plannerKindColor(_ kind: PlannerBlockKind) -> Color {
-    switch kind {
-    case .study: return SymphoTheme.colorActive.opacity(0.88)
-    case .training: return SymphoTheme.colorMastered
-    case .other: return SymphoTheme.secondaryText
     }
 }

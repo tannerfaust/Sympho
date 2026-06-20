@@ -621,7 +621,9 @@ struct ReadingListEditorSheet: View {
             }
         }
         .padding(24)
+        #if os(macOS)
         .frame(width: 480)
+        #endif
         .onAppear(perform: loadDraft)
     }
 

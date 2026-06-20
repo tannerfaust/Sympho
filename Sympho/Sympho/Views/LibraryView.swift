@@ -8,10 +8,10 @@
 import SwiftUI
 import SwiftData
 import UniformTypeIdentifiers
+import QuickLookThumbnailing
 #if os(macOS)
 import AppKit
 import MarkdownEngine
-import QuickLookThumbnailing
 #endif
 
 private enum LibraryFilterScope: String, CaseIterable, Identifiable {
@@ -30,6 +30,69 @@ private enum LibraryFilterScope: String, CaseIterable, Identifiable {
     }
 }
 
+enum LibraryLayout: String, CaseIterable, Identifiable {
+    case grid
+    case list
+    case gallery
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .grid: return "Grid"
+        case .list: return "List"
+        case .gallery: return "Gallery"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .grid: return "square.grid.2x2"
+        case .list: return "list.bullet"
+        case .gallery: return "rectangle.grid.1x2"
+        }
+    }
+}
+
+enum LibrarySort: String, CaseIterable, Identifiable {
+    case manual
+    case recent
+    case title
+    case status
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .manual: return "Manual order"
+        case .recent: return "Recently updated"
+        case .title: return "Title (A–Z)"
+        case .status: return "Status"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .manual: return "hand.draw"
+        case .recent: return "clock"
+        case .title: return "textformat"
+        case .status: return "circle.lefthalf.filled"
+        }
+    }
+}
+
+extension LibraryStatus {
+    /// View-layer accent used for badges and status controls (monochrome + green for done).
+    var tint: Color {
+        switch self {
+        case .toReview: return SymphoTheme.secondaryText
+        case .reading: return SymphoTheme.colorActive
+        case .done: return SymphoTheme.colorMastered
+        case .archived: return SymphoTheme.tertiaryText
+        }
+    }
+}
+
 private struct FilterUpdateTrigger: Equatable {
     let searchText: String
     let filterScope: LibraryFilterScope
@@ -37,6 +100,9 @@ private struct FilterUpdateTrigger: Equatable {
     let selectedProjectID: UUID?
     let selectedTagID: UUID?
     let selectedTagFilterID: UUID?
+    let selectedResourceTypeRawValue: String?
+    let statusFilterRawValue: String?
+    let sortRawValue: String
     let entriesCount: Int
     let nodesCount: Int
     let projectsCount: Int
@@ -91,9 +157,30 @@ struct LibraryView: View {
     @State private var selectedProject: Project?
     @State private var selectedReadingTag: LibraryTag?
     @State private var selectedTagFilter: LibraryTag?
+    @State private var selectedResourceType: ResourceType?
     @State private var showsCreateEntry = false
     @State private var showsCompactTitle = false
     @FocusState private var isSearchFocused: Bool
+
+    @AppStorage("libraryLayout") private var viewModeRaw = LibraryLayout.grid.rawValue
+    @AppStorage("librarySort") private var sortOrderRaw = LibrarySort.recent.rawValue
+    @State private var statusFilter: LibraryStatus?
+    @State private var isFileDropTargeted = false
+    @State private var dropImportError: String?
+    @State private var showsAddLink = false
+    @State private var didNormalizeOrder = false
+    @State private var draggingEntryID: UUID?
+    @State private var dropTargetEntryID: UUID?
+
+    private var viewMode: LibraryLayout {
+        get { LibraryLayout(rawValue: viewModeRaw) ?? .grid }
+        nonmutating set { viewModeRaw = newValue.rawValue }
+    }
+
+    private var sortOrder: LibrarySort {
+        get { LibrarySort(rawValue: sortOrderRaw) ?? .recent }
+        nonmutating set { sortOrderRaw = newValue.rawValue }
+    }
 
     @State private var cachedFilteredEntries: [Resource] = []
 
@@ -138,6 +225,7 @@ struct LibraryView: View {
             newEntry.projects.append(selectedProject)
             newEntry.domain = selectedProject.domain
         }
+        newEntry.sortIndex = nextSortIndex()
         modelContext.insert(newEntry)
         
         // Immediately save the note as a real markdown file in the workspace
@@ -157,6 +245,9 @@ struct LibraryView: View {
                 header
                 searchBar
                 filterBar
+                if filterScope != .readingList {
+                    libraryToolbar
+                }
                 tagFilterBanner
 
                 if filterScope == .readingList {
@@ -165,20 +256,8 @@ struct LibraryView: View {
                         selectedDomain: selectedDomain,
                         selectedTag: selectedReadingTag
                     )
-                } else if cachedFilteredEntries.isEmpty {
-                    emptyState
                 } else {
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 242), spacing: 12)], spacing: 12) {
-                        ForEach(cachedFilteredEntries) { entry in
-                            LibraryEntryCard(entry: entry) {
-                                entry.markHomeOpened()
-                                try? modelContext.save()
-                                selectedEntry = entry
-                            }
-                        }
-                    }
-                    .padding(.horizontal, SymphoTheme.outerPadding)
-                    .padding(.bottom, SymphoTheme.outerPadding)
+                    entriesContent
                 }
             }
         }
@@ -190,6 +269,12 @@ struct LibraryView: View {
                 initialProject: filterScope == .projects ? selectedProject : nil
             )
         }
+        .sheet(isPresented: $showsAddLink) {
+            AddLibraryLinkSheet(
+                initialDomain: filterScope == .domains ? selectedDomain : nil,
+                initialProject: filterScope == .projects ? selectedProject : nil
+            )
+        }
         .task(id: FilterUpdateTrigger(
             searchText: searchText,
             filterScope: filterScope,
@@ -197,6 +282,9 @@ struct LibraryView: View {
             selectedProjectID: selectedProject?.id,
             selectedTagID: selectedReadingTag?.id,
             selectedTagFilterID: selectedTagFilter?.id,
+            selectedResourceTypeRawValue: selectedResourceType?.rawValue,
+            statusFilterRawValue: statusFilter?.rawValue,
+            sortRawValue: sortOrderRaw,
             entriesCount: entries.count,
             nodesCount: allNodes.count,
             projectsCount: projects.count
@@ -204,6 +292,7 @@ struct LibraryView: View {
             updateFilteredEntries()
         }
         .onAppear {
+            normalizeSortIndexIfNeeded()
             if !initialSearchText.isEmpty {
                 searchText = initialSearchText
             }
@@ -294,8 +383,20 @@ struct LibraryView: View {
             let count = readingListItems.count
             return count == 0 ? "No books" : "\(count) book\(count == 1 ? "" : "s")"
         case .domains, .projects:
-            let count = entries.count
-            return count == 0 ? "No saved entries" : "\(count) saved entr\(count == 1 ? "y" : "ies")"
+            let total = entries.count
+            guard total > 0 else { return "No saved entries" }
+
+            let filtered = cachedFilteredEntries.count
+            let isFiltered = selectedResourceType != nil
+                || selectedDomain != nil
+                || selectedProject != nil
+                || selectedTagFilter != nil
+                || !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+
+            if isFiltered, filtered != total {
+                return "\(filtered) of \(total) entr\(total == 1 ? "y" : "ies")"
+            }
+            return "\(total) saved entr\(total == 1 ? "y" : "ies")"
         }
     }
 
@@ -356,6 +457,7 @@ struct LibraryView: View {
                             }
                             if scope == .readingList {
                                 selectedTagFilter = nil
+                                selectedResourceType = nil
                             }
                         }
                     } label: {
@@ -388,17 +490,25 @@ struct LibraryView: View {
                 }
 
                 if filterScope != .readingList {
-                    Menu {
-                        Button {
-                            showsCreateEntry = true
-                        } label: {
-                            Label("New Reference", systemImage: "paperclip")
-                        }
+                    resourceTypeFilterMenu
 
+                    Menu {
                         Button {
                             createNewBlankNote()
                         } label: {
-                            Label("New Markdown Note", systemImage: "note.text.badge.plus")
+                            Label("New Note", systemImage: "note.text.badge.plus")
+                        }
+
+                        Button {
+                            showsAddLink = true
+                        } label: {
+                            Label("Add Link…", systemImage: "link.badge.plus")
+                        }
+
+                        Button {
+                            showsCreateEntry = true
+                        } label: {
+                            Label("Import Files…", systemImage: "paperclip")
                         }
                     } label: {
                         Image(systemName: "plus")
@@ -416,6 +526,48 @@ struct LibraryView: View {
         }
         .padding(.horizontal, SymphoTheme.outerPadding)
         .padding(.bottom, 16)
+    }
+
+    private var resourceTypeFilterMenu: some View {
+        Menu {
+            Button {
+                selectedResourceType = nil
+            } label: {
+                Label("All Types", systemImage: selectedResourceType == nil ? "checkmark" : "circle")
+            }
+
+            Divider()
+
+            ForEach(ResourceType.allCases) { type in
+                Button {
+                    selectedResourceType = type
+                } label: {
+                    Label(
+                        resourceTypeFilterLabel(type),
+                        systemImage: selectedResourceType == type ? "checkmark" : type.iconName
+                    )
+                }
+            }
+        } label: {
+            Image(systemName: selectedResourceType == nil ? "line.3.horizontal.decrease.circle" : "line.3.horizontal.decrease.circle.fill")
+                .font(.system(size: 12, weight: .semibold))
+                .frame(width: 26, height: 26)
+        }
+        .buttonStyle(.glass)
+        .buttonBorderShape(.circle)
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help(selectedResourceType.map { "Filtered: \(resourceTypeFilterLabel($0))" } ?? "Filter by type")
+    }
+
+    private func resourceTypeFilterLabel(_ type: ResourceType) -> String {
+        switch type {
+        case .pdf: return "Documents"
+        case .video: return "Videos"
+        case .url: return "Links"
+        case .note: return "Notes"
+        }
     }
 
     private var domainFilters: some View {
@@ -527,12 +679,360 @@ struct LibraryView: View {
         .buttonStyle(.plain)
     }
 
+    // MARK: - Toolbar (layout · sort · status)
+
+    private var libraryToolbar: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                layoutSwitcher
+                Spacer(minLength: 8)
+                sortMenu
+            }
+            statusFilterChips
+        }
+        .padding(.horizontal, SymphoTheme.outerPadding)
+        .padding(.bottom, 14)
+    }
+
+    private var layoutSwitcher: some View {
+        HStack(spacing: 2) {
+            ForEach(LibraryLayout.allCases) { layout in
+                Button {
+                    withAnimation(.easeInOut(duration: 0.15)) { viewMode = layout }
+                } label: {
+                    Image(systemName: layout.systemImage)
+                        .font(.system(size: 12, weight: .semibold))
+                        .frame(width: 32, height: 24)
+                        .background {
+                            if viewMode == layout {
+                                Capsule().fill(SymphoTheme.primaryText)
+                            }
+                        }
+                        .foregroundStyle(viewMode == layout ? SymphoTheme.primaryCanvas : SymphoTheme.secondaryText)
+                }
+                .buttonStyle(.plain)
+                .help(layout.label)
+            }
+        }
+        .padding(2)
+        .glassEffect(.regular.interactive(), in: .capsule)
+    }
+
+    private var sortMenu: some View {
+        Menu {
+            ForEach(LibrarySort.allCases) { option in
+                Button {
+                    sortOrder = option
+                    updateFilteredEntries()
+                } label: {
+                    Label(option.label, systemImage: sortOrder == option ? "checkmark" : option.systemImage)
+                }
+            }
+        } label: {
+            Label(sortOrder.label, systemImage: "arrow.up.arrow.down")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(SymphoTheme.secondaryText)
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help("Sort entries")
+    }
+
+    private var statusFilterChips: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                statusChip(title: "All", systemImage: "tray.full", isSelected: statusFilter == nil, tint: SymphoTheme.primaryText) {
+                    statusFilter = nil
+                }
+                ForEach(LibraryStatus.allCases) { status in
+                    statusChip(
+                        title: status.displayName,
+                        systemImage: status.systemImage,
+                        isSelected: statusFilter == status,
+                        tint: status.tint
+                    ) {
+                        statusFilter = (statusFilter == status) ? nil : status
+                    }
+                }
+            }
+            .padding(.vertical, 2)
+        }
+    }
+
+    private func statusChip(title: String, systemImage: String, isSelected: Bool, tint: Color, action: @escaping () -> Void) -> some View {
+        Button {
+            withAnimation(.easeInOut(duration: 0.12)) { action() }
+        } label: {
+            Label(title, systemImage: systemImage)
+                .font(.system(size: 11, weight: .medium))
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background {
+                    Capsule().fill(isSelected ? tint.opacity(0.18) : SymphoTheme.elevatedCanvas.opacity(0.42))
+                }
+                .overlay {
+                    Capsule().stroke(isSelected ? tint.opacity(0.55) : .clear, lineWidth: 1)
+                }
+                .foregroundStyle(isSelected ? SymphoTheme.primaryText : SymphoTheme.secondaryText)
+        }
+        .buttonStyle(.plain)
+    }
+
+    // MARK: - Entries content (grid · list · gallery) + drop import
+
+    @ViewBuilder
+    private var entriesContent: some View {
+        Group {
+            if cachedFilteredEntries.isEmpty {
+                emptyState
+            } else {
+                switch viewMode {
+                case .grid: gridContent
+                case .list: listContent
+                case .gallery: galleryContent
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, minHeight: 320, alignment: .top)
+        .contentShape(Rectangle())
+        .dropDestination(for: URL.self) { urls, _ in
+            importDroppedFiles(urls)
+            return true
+        } isTargeted: { targeted in
+            withAnimation(.easeInOut(duration: 0.15)) { isFileDropTargeted = targeted }
+        }
+        .overlay {
+            if isFileDropTargeted {
+                dropOverlay
+            }
+        }
+        .overlay(alignment: .bottom) {
+            if let dropImportError {
+                Text(dropImportError)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(SymphoTheme.colorCritical)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(Capsule().fill(SymphoTheme.elevatedCanvas))
+                    .padding(.bottom, 16)
+                    .transition(.opacity)
+            }
+        }
+    }
+
+    private var gridContent: some View {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 242), spacing: 12)], spacing: 12) {
+            ForEach(cachedFilteredEntries) { entry in
+                draggableEntry(entry) {
+                    LibraryEntryCard(entry: entry) { open(entry) }
+                }
+            }
+        }
+        .padding(.horizontal, SymphoTheme.outerPadding)
+        .padding(.bottom, SymphoTheme.outerPadding)
+    }
+
+    private var galleryContent: some View {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 360), spacing: 16)], spacing: 16) {
+            ForEach(cachedFilteredEntries) { entry in
+                draggableEntry(entry) {
+                    LibraryGalleryCard(entry: entry) { open(entry) }
+                }
+            }
+        }
+        .padding(.horizontal, SymphoTheme.outerPadding)
+        .padding(.bottom, SymphoTheme.outerPadding)
+    }
+
+    private var listContent: some View {
+        LazyVStack(spacing: 6) {
+            ForEach(cachedFilteredEntries) { entry in
+                draggableEntry(entry) {
+                    LibraryEntryRow(entry: entry) { open(entry) }
+                }
+            }
+        }
+        .padding(.horizontal, SymphoTheme.outerPadding)
+        .padding(.bottom, SymphoTheme.outerPadding)
+    }
+
+    @ViewBuilder
+    private func draggableEntry<Content: View>(_ entry: Resource, @ViewBuilder content: () -> Content) -> some View {
+        content()
+            .opacity(draggingEntryID == entry.id ? 0.35 : 1)
+            .overlay {
+                if dropTargetEntryID == entry.id, draggingEntryID != entry.id {
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .stroke(SymphoTheme.primaryText.opacity(0.6), lineWidth: 2)
+                }
+            }
+            .draggable(LibraryEntryTransfer(id: entry.id)) {
+                LibraryDragPreview(title: entry.title, systemImage: entry.resourceType.iconName)
+                    .onAppear { draggingEntryID = entry.id }
+            }
+            .dropDestination(for: LibraryEntryTransfer.self) { items, _ in
+                draggingEntryID = nil
+                dropTargetEntryID = nil
+                guard let dragged = items.first?.id, dragged != entry.id else { return false }
+                reorder(movingID: dragged, toBefore: entry.id)
+                return true
+            } isTargeted: { targeted in
+                withAnimation(.easeInOut(duration: 0.1)) {
+                    if targeted {
+                        dropTargetEntryID = entry.id
+                    } else if dropTargetEntryID == entry.id {
+                        dropTargetEntryID = nil
+                    }
+                }
+            }
+            .task(id: entry.id) {
+                await enrichLinkTitleIfNeeded(entry)
+            }
+    }
+
+    /// Fetches a real page/video title for link entries that still show a raw URL.
+    private func enrichLinkTitleIfNeeded(_ entry: Resource) async {
+        guard entry.needsGeneratedTitle, let url = entry.httpURL else { return }
+        let metadata = await LinkMetadataService.shared.metadata(for: url)
+        guard entry.needsGeneratedTitle,
+              let fetched = metadata.title?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !fetched.isEmpty else { return }
+        entry.title = fetched
+        entry.updatedAt = Date()
+        entry.isSynced = false
+        try? modelContext.save()
+    }
+
+    private func open(_ entry: Resource) {
+        entry.markHomeOpened()
+        try? modelContext.save()
+        selectedEntry = entry
+    }
+
+    private var dropOverlay: some View {
+        RoundedRectangle(cornerRadius: 18, style: .continuous)
+            .fill(SymphoTheme.primaryText.opacity(0.04))
+            .overlay {
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .strokeBorder(style: StrokeStyle(lineWidth: 2, dash: [7]))
+                    .foregroundStyle(SymphoTheme.primaryText.opacity(0.35))
+            }
+            .overlay {
+                VStack(spacing: 8) {
+                    Image(systemName: "tray.and.arrow.down")
+                        .font(.system(size: 26, weight: .light))
+                    Text("Drop files to add to Library")
+                        .font(.system(size: 13, weight: .semibold))
+                }
+                .foregroundStyle(SymphoTheme.secondaryText)
+            }
+            .padding(SymphoTheme.outerPadding)
+            .allowsHitTesting(false)
+    }
+
+    // MARK: - Drop import + reordering
+
+    private func importDroppedFiles(_ urls: [URL]) {
+        let fileURLs = CaptureFileDropLoader.normalizedFileURLs(urls)
+        guard !fileURLs.isEmpty else { return }
+
+        var failed: [String] = []
+
+        for url in fileURLs {
+            let baseTitle = url.deletingPathExtension().lastPathComponent
+            let entry = Resource(
+                title: baseTitle.isEmpty ? url.lastPathComponent : baseTitle,
+                resourceType: .pdf,
+                domain: filterScope == .domains ? selectedDomain : (filterScope == .projects ? selectedProject?.domain : nil)
+            )
+            if filterScope == .projects, let selectedProject {
+                entry.projects.append(selectedProject)
+            }
+            entry.sortIndex = nextSortIndex()
+            modelContext.insert(entry)
+
+            do {
+                let imported = try LibraryStorage.importFile(from: url, entryID: entry.id, entryTitle: entry.title)
+                let attachment = LibraryAttachment(imported: imported, resource: entry)
+                modelContext.insert(attachment)
+                entry.attachments.append(attachment)
+                entry.resourceType = Self.resourceType(forContentType: imported.contentType)
+            } catch {
+                modelContext.delete(entry)
+                failed.append(url.lastPathComponent)
+            }
+        }
+
+        try? modelContext.save()
+        updateFilteredEntries()
+
+        if failed.isEmpty {
+            dropImportError = nil
+        } else {
+            showDropError("Could not import: \(failed.joined(separator: ", "))")
+        }
+    }
+
+    private static func resourceType(forContentType contentType: String) -> ResourceType {
+        guard let type = UTType(contentType) else { return .pdf }
+        if type.conforms(to: .movie) || type.conforms(to: .audiovisualContent) { return .video }
+        return .pdf
+    }
+
+    private func showDropError(_ message: String) {
+        withAnimation { dropImportError = message }
+        Task {
+            try? await Task.sleep(for: .seconds(4))
+            withAnimation { dropImportError = nil }
+        }
+    }
+
+    private func nextSortIndex() -> Int {
+        (entries.map(\.sortIndex).max() ?? 0) + 1
+    }
+
+    private func reorder(movingID: UUID, toBefore targetID: UUID) {
+        var ordered = cachedFilteredEntries
+        guard let from = ordered.firstIndex(where: { $0.id == movingID }) else { return }
+        let moved = ordered.remove(at: from)
+        guard let insertAt = ordered.firstIndex(where: { $0.id == targetID }) else { return }
+        ordered.insert(moved, at: insertAt)
+
+        withAnimation(.snappy(duration: 0.2)) {
+            // Reassign indices from the currently visible order so drag-to-reorder
+            // works from any sort; switching to manual makes the new order stick.
+            for (index, entry) in ordered.enumerated() {
+                entry.sortIndex = index
+                entry.isSynced = false
+            }
+            cachedFilteredEntries = ordered
+            if sortOrder != .manual {
+                sortOrder = .manual
+            }
+        }
+        try? modelContext.save()
+    }
+
+    private func normalizeSortIndexIfNeeded() {
+        guard !didNormalizeOrder else { return }
+        didNormalizeOrder = true
+        let distinct = Set(entries.map(\.sortIndex))
+        guard distinct.count <= 1, entries.count > 1 else { return }
+        // Fresh migration: every entry shares sortIndex 0 → seed order by recency.
+        for (index, entry) in entries.enumerated() {
+            entry.sortIndex = index
+            entry.isSynced = false
+        }
+        try? modelContext.save()
+    }
+
     private func updateFilteredEntries() {
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         
         let selectedDomainID = selectedDomain?.id
         let selectedProjectID = selectedProject?.id
         let selectedTagFilterID = selectedTagFilter?.id
+        let selectedResourceType = selectedResourceType
         
         // Build lookup maps to avoid traversing nested SwiftData relationships in the filter loop
         let projectDomainMap = Dictionary(uniqueKeysWithValues: projects.compactMap { project -> (UUID, UUID)? in
@@ -556,7 +1056,7 @@ struct LibraryView: View {
             return nil
         })
         
-        cachedFilteredEntries = entries.filter {
+        let filtered = entries.filter {
             let matchesSearch = query.isEmpty ||
                 $0.title.lowercased().contains(query) ||
                 $0.bodyText.lowercased().contains(query) ||
@@ -568,6 +1068,14 @@ struct LibraryView: View {
 
             if let selectedTagFilterID {
                 guard $0.tags.contains(where: { $0.id == selectedTagFilterID }) else { return false }
+            }
+
+            if let selectedResourceType {
+                guard $0.resourceType == selectedResourceType else { return false }
+            }
+
+            if let statusFilter {
+                guard $0.libraryStatus == statusFilter else { return false }
             }
 
             switch filterScope {
@@ -586,6 +1094,25 @@ struct LibraryView: View {
                 return false
             }
         }
+
+        cachedFilteredEntries = sortEntries(filtered)
+    }
+
+    private func sortEntries(_ list: [Resource]) -> [Resource] {
+        switch sortOrder {
+        case .manual:
+            return list.sorted { $0.sortIndex < $1.sortIndex }
+        case .recent:
+            return list.sorted { $0.updatedAt > $1.updatedAt }
+        case .title:
+            return list.sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+        case .status:
+            return list.sorted {
+                $0.libraryStatus.sortRank != $1.libraryStatus.sortRank
+                    ? $0.libraryStatus.sortRank < $1.libraryStatus.sortRank
+                    : $0.updatedAt > $1.updatedAt
+            }
+        }
     }
 
     private var emptyState: some View {
@@ -598,16 +1125,22 @@ struct LibraryView: View {
                 .frame(width: 64, height: 64)
                 .glassEffect(.regular, in: .rect(cornerRadius: 18))
 
-            Text(searchText.isEmpty ? "Library empty" : "No matching entries")
+            Text(hasActiveFilter ? "No matching entries" : "Library empty")
                 .font(.system(size: 17, weight: .semibold))
                 .foregroundStyle(SymphoTheme.primaryText)
 
-            Text(searchText.isEmpty ? "Save notes and files together as focused reference entries." : "Try a different search.")
+            Text(emptyStateDetail)
                 .metadataSans()
 
-            if searchText.isEmpty {
+            if !hasActiveFilter {
                 Button("New Entry") {
                     showsCreateEntry = true
+                }
+                .buttonStyle(SymphoSecondaryButtonStyle())
+                .padding(.top, 3)
+            } else if statusFilter != nil {
+                Button("Clear status filter") {
+                    withAnimation { statusFilter = nil }
                 }
                 .buttonStyle(SymphoSecondaryButtonStyle())
                 .padding(.top, 3)
@@ -616,6 +1149,26 @@ struct LibraryView: View {
             Spacer()
         }
         .frame(maxWidth: .infinity, minHeight: 390)
+    }
+
+    private var hasActiveFilter: Bool {
+        !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || selectedResourceType != nil
+            || statusFilter != nil
+            || selectedTagFilter != nil
+    }
+
+    private var emptyStateDetail: String {
+        if let statusFilter {
+            return "Nothing marked “\(statusFilter.displayName)” here yet."
+        }
+        if !searchText.isEmpty {
+            return "Try a different search or filter."
+        }
+        if let selectedResourceType {
+            return "No \(resourceTypeFilterLabel(selectedResourceType).lowercased()) in this view yet."
+        }
+        return "Save notes and files together as focused reference entries. Drag files here to add them."
     }
 }
 
@@ -687,23 +1240,22 @@ private struct LibraryEntryCard: View {
             RoundedRectangle(cornerRadius: 17, style: .continuous)
                 .stroke(isHovering ? SymphoTheme.primaryText.opacity(0.16) : SymphoTheme.dividerColor, lineWidth: 1)
         }
-        .clipShape(RoundedRectangle(cornerRadius: 17, style: .continuous))
-        .onHover { isHovering = $0 }
-        .contextMenu {
-            Button(entry.isPinned ? "Unpin from Home" : "Pin to Home", systemImage: entry.isPinned ? "pin.slash" : "pin") {
-                entry.isPinned.toggle()
-                entry.updatedAt = Date()
-                entry.isSynced = false
-                try? modelContext.save()
-            }
-            Button("Edit", systemImage: "pencil", action: onOpen)
-            Button("Delete", role: .destructive) {
-                entry.isDeletedLocally = true
-                entry.updatedAt = Date()
-                entry.isSynced = false
-                try? modelContext.save()
+        .overlay(alignment: .topLeading) {
+            LibraryStatusBadge(status: entry.libraryStatus)
+                .padding(9)
+        }
+        .overlay(alignment: .topTrailing) {
+            if isHovering {
+                LibraryCardHoverActions(entry: entry)
+                    .padding(7)
+                    .transition(.opacity)
             }
         }
+        .clipShape(RoundedRectangle(cornerRadius: 17, style: .continuous))
+        .onHover { hovering in
+            withAnimation(.easeInOut(duration: 0.12)) { isHovering = hovering }
+        }
+        .libraryEntryContextMenu(entry: entry, modelContext: modelContext, onOpen: onOpen)
     }
 
     @ViewBuilder
@@ -725,6 +1277,12 @@ private struct LibraryEntryCard: View {
             LibraryAttachmentThumbnail(attachment: attachment)
                 .overlay(alignment: .bottomLeading) {
                     previewLabel(attachment.typeLabel, iconName: attachment.iconName)
+                }
+                .libraryCardPreview()
+        } else if let linkURL {
+            LibraryLinkThumbnail(url: linkURL)
+                .overlay(alignment: .bottomLeading) {
+                    previewLabel("LINK", iconName: "link")
                 }
                 .libraryCardPreview()
         } else {
@@ -752,6 +1310,11 @@ private struct LibraryEntryCard: View {
             .background(SymphoTheme.secondarySurface.opacity(0.55))
             .libraryCardPreview()
         }
+    }
+
+    private var linkURL: URL? {
+        guard entry.youtubeThumbnailURL == nil, representativeAttachment == nil else { return nil }
+        return entry.httpURL
     }
 
     private func previewLabel(_ title: String, iconName: String) -> some View {
@@ -803,6 +1366,547 @@ private struct LibraryEntryCard: View {
     }
 }
 
+// MARK: - Shared entry helpers
+
+private extension Resource {
+    /// Non-file http(s) link for this entry, if any (used for rich link previews).
+    var httpURL: URL? {
+        let trimmed = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let url = URL(string: trimmed),
+              let scheme = url.scheme?.lowercased(),
+              scheme == "http" || scheme == "https" else { return nil }
+        return url
+    }
+
+    /// True when a link entry is still showing a raw URL/host or a generic
+    /// placeholder instead of the real page/video title.
+    var needsGeneratedTitle: Bool {
+        guard let url = httpURL else { return false }
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { return true }
+        let lower = trimmed.lowercased()
+        if lower.hasPrefix("http://") || lower.hasPrefix("https://") { return true }
+        if lower.hasPrefix("source:") || lower.hasPrefix("source ") { return true }
+        if lower == urlString.lowercased() { return true }
+        if let host = url.host?.lowercased(), lower == host || lower == "www.\(host)" { return true }
+
+        let placeholders: Set<String> = [
+            "source link", "link", "web link", "url", "untitled", "untitled note",
+            "captured web address", "new link", "new reference", "saved link"
+        ]
+        return placeholders.contains(lower)
+    }
+}
+
+private extension Date {
+    var libraryRelativeLabel: String {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .abbreviated
+        return formatter.localizedString(for: self, relativeTo: Date())
+    }
+}
+
+struct LibraryEntryTransfer: Codable, Transferable {
+    let id: UUID
+    static var transferRepresentation: some TransferRepresentation {
+        CodableRepresentation(contentType: .json)
+    }
+}
+
+private struct LibraryDragPreview: View {
+    let title: String
+    let systemImage: String
+    var body: some View {
+        Label(title.isEmpty ? "Untitled" : title, systemImage: systemImage)
+            .font(.system(size: 12, weight: .medium))
+            .lineLimit(1)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .background(Capsule().fill(SymphoTheme.elevatedCanvas))
+    }
+}
+
+struct LibraryStatusBadge: View {
+    let status: LibraryStatus
+    var body: some View {
+        Label(status.displayName, systemImage: status.systemImage)
+            .font(.system(size: 9, weight: .semibold))
+            .foregroundStyle(status.tint)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3)
+            .background(Capsule().fill(SymphoTheme.primaryCanvas.opacity(0.92)))
+            .overlay(Capsule().stroke(status.tint.opacity(0.35), lineWidth: 1))
+    }
+}
+
+/// Menu for changing an entry's workflow status. Used on cards, rows, and the detail header.
+struct LibraryStatusControl: View {
+    enum Style { case iconOnly, badge, full }
+
+    @Environment(\.modelContext) private var modelContext
+    let entry: Resource
+    var style: Style = .badge
+
+    var body: some View {
+        Menu {
+            ForEach(LibraryStatus.allCases) { status in
+                Button {
+                    entry.setLibraryStatus(status)
+                    try? modelContext.save()
+                } label: {
+                    Label(status.displayName, systemImage: entry.libraryStatus == status ? "checkmark" : status.systemImage)
+                }
+            }
+        } label: {
+            switch style {
+            case .iconOnly:
+                Image(systemName: entry.libraryStatus.systemImage)
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(entry.libraryStatus.tint)
+                    .frame(width: 26, height: 26)
+                    .background(Circle().fill(SymphoTheme.primaryCanvas.opacity(0.92)))
+                    .overlay(Circle().stroke(SymphoTheme.dividerColor, lineWidth: 1))
+            case .badge:
+                LibraryStatusBadge(status: entry.libraryStatus)
+            case .full:
+                Label(entry.libraryStatus.displayName, systemImage: entry.libraryStatus.systemImage)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(entry.libraryStatus.tint)
+                    .padding(.horizontal, 11)
+                    .padding(.vertical, 7)
+                    .background(Capsule().fill(SymphoTheme.elevatedCanvas.opacity(0.6)))
+                    .overlay(Capsule().stroke(entry.libraryStatus.tint.opacity(0.35), lineWidth: 1))
+            }
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+    }
+}
+
+private struct LibraryCardHoverActions: View {
+    @Environment(\.modelContext) private var modelContext
+    let entry: Resource
+
+    var body: some View {
+        HStack(spacing: 5) {
+            LibraryStatusControl(entry: entry, style: .iconOnly)
+
+            Button {
+                entry.isPinned.toggle()
+                entry.updatedAt = Date()
+                entry.isSynced = false
+                try? modelContext.save()
+            } label: {
+                Image(systemName: entry.isPinned ? "pin.fill" : "pin")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(entry.isPinned ? SymphoTheme.primaryText : SymphoTheme.secondaryText)
+                    .frame(width: 26, height: 26)
+                    .background(Circle().fill(SymphoTheme.primaryCanvas.opacity(0.92)))
+                    .overlay(Circle().stroke(SymphoTheme.dividerColor, lineWidth: 1))
+            }
+            .buttonStyle(.plain)
+            .help(entry.isPinned ? "Unpin from Home" : "Pin to Home")
+        }
+    }
+}
+
+private extension View {
+    func libraryEntryContextMenu(entry: Resource, modelContext: ModelContext, onOpen: @escaping () -> Void) -> some View {
+        contextMenu {
+            Button("Open", systemImage: "arrow.up.right", action: onOpen)
+
+            Menu("Set Status") {
+                ForEach(LibraryStatus.allCases) { status in
+                    Button {
+                        entry.setLibraryStatus(status)
+                        try? modelContext.save()
+                    } label: {
+                        Label(status.displayName, systemImage: entry.libraryStatus == status ? "checkmark" : status.systemImage)
+                    }
+                }
+            }
+
+            Button(entry.isPinned ? "Unpin from Home" : "Pin to Home", systemImage: entry.isPinned ? "pin.slash" : "pin") {
+                entry.isPinned.toggle()
+                entry.updatedAt = Date()
+                entry.isSynced = false
+                try? modelContext.save()
+            }
+
+            Divider()
+
+            Button("Delete", role: .destructive) {
+                entry.isDeletedLocally = true
+                entry.updatedAt = Date()
+                entry.isSynced = false
+                try? modelContext.save()
+            }
+        }
+    }
+}
+
+// MARK: - Shared preview surface (gallery)
+
+private struct LibraryEntryPreview: View {
+    let entry: Resource
+    var height: CGFloat = 126
+
+    var body: some View {
+        Group {
+            if let thumbnailURL = entry.youtubeThumbnailURL {
+                LibraryRemoteThumbnail(url: thumbnailURL, fallbackIcon: "play.rectangle")
+                    .overlay(alignment: .center) {
+                        Image(systemName: "play.fill")
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .frame(width: 36, height: 36)
+                            .background(.black.opacity(0.62), in: .circle)
+                    }
+                    .overlay(alignment: .bottomLeading) { label("YOUTUBE", "play.rectangle") }
+            } else if let attachment = displayAttachment {
+                LibraryAttachmentThumbnail(attachment: attachment)
+                    .overlay(alignment: .bottomLeading) { label(attachment.typeLabel, attachment.iconName) }
+            } else if let linkURL = entry.httpURL {
+                LibraryLinkThumbnail(url: linkURL)
+                    .overlay(alignment: .bottomLeading) { label("LINK", "link") }
+            } else {
+                noteSurface
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .frame(height: height)
+        .clipped()
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    private var noteSurface: some View {
+        ZStack {
+            SymphoTheme.secondarySurface.opacity(0.55)
+            if !entry.bodyText.isEmpty {
+                Text(entry.bodyText)
+                    .font(SymphoNoteTypography.previewFont)
+                    .foregroundStyle(SymphoTheme.secondaryText)
+                    .lineSpacing(2)
+                    .multilineTextAlignment(.leading)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .padding(14)
+            } else {
+                VStack(spacing: 6) {
+                    Image(systemName: "note.text")
+                        .font(.system(size: 22, weight: .light))
+                        .foregroundStyle(SymphoTheme.tertiaryText)
+                    Text("Empty Note")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(SymphoTheme.tertiaryText)
+                }
+            }
+        }
+    }
+
+    private func label(_ title: String, _ icon: String) -> some View {
+        Label(title, systemImage: icon)
+            .font(.system(size: 9, weight: .semibold))
+            .foregroundStyle(.white)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 4)
+            .background(.black.opacity(0.56), in: .capsule)
+            .padding(7)
+    }
+
+    private var displayAttachment: LibraryDisplayAttachment? {
+        if let attachment = entry.attachments.sorted(by: { $0.previewPriority < $1.previewPriority }).first {
+            return LibraryDisplayAttachment(
+                id: attachment.id,
+                name: attachment.displayName,
+                contentType: attachment.contentType,
+                byteSize: attachment.byteSize,
+                url: LibraryStorage.resolvedURL(for: attachment)
+            )
+        }
+        guard let legacyURL = LibraryStorage.legacyResolvedURL(for: entry) else { return nil }
+        return LibraryDisplayAttachment(
+            id: entry.id,
+            name: legacyURL.lastPathComponent,
+            contentType: UTType(filenameExtension: legacyURL.pathExtension)?.identifier ?? UTType.data.identifier,
+            byteSize: nil,
+            url: legacyURL
+        )
+    }
+}
+
+// MARK: - List row
+
+private struct LibraryEntryRow: View {
+    @Environment(\.modelContext) private var modelContext
+    let entry: Resource
+    let onOpen: () -> Void
+
+    @State private var isHovering = false
+
+    var body: some View {
+        Button(action: onOpen) {
+            HStack(spacing: 12) {
+                Image(systemName: rowIcon)
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundStyle(SymphoTheme.secondaryText)
+                    .frame(width: 30, height: 30)
+                    .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(SymphoTheme.secondarySurface.opacity(0.5)))
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(entry.title.isEmpty ? "Untitled" : entry.title)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(SymphoTheme.primaryText)
+                        .lineLimit(1)
+
+                    HStack(spacing: 8) {
+                        if let domain = entry.domain {
+                            Label(domain.title, systemImage: DomainIcon.validated(domain.iconName)).lineLimit(1)
+                        }
+                        if !entry.tags.isEmpty {
+                            Text(entry.tags.prefix(3).map { "#\($0.name)" }.joined(separator: " ")).lineLimit(1)
+                        }
+                    }
+                    .font(.system(size: 10))
+                    .foregroundStyle(SymphoTheme.tertiaryText)
+                }
+
+                Spacer(minLength: 8)
+
+                if isHovering {
+                    LibraryStatusControl(entry: entry, style: .iconOnly)
+                } else {
+                    LibraryStatusBadge(status: entry.libraryStatus)
+                }
+
+                Text(entry.updatedAt.libraryRelativeLabel)
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(SymphoTheme.tertiaryText)
+                    .frame(width: 56, alignment: .trailing)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 9)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .background {
+            RoundedRectangle(cornerRadius: 11, style: .continuous)
+                .fill(SymphoTheme.elevatedCanvas.opacity(isHovering ? 0.72 : 0.42))
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 11, style: .continuous)
+                .stroke(SymphoTheme.dividerColor, lineWidth: 1)
+        }
+        .onHover { isHovering = $0 }
+        .libraryEntryContextMenu(entry: entry, modelContext: modelContext, onOpen: onOpen)
+    }
+
+    private var rowIcon: String {
+        if entry.youtubeThumbnailURL != nil { return "play.rectangle.fill" }
+        if !entry.attachments.isEmpty { return entry.attachments.count > 1 ? "doc.on.doc" : "paperclip" }
+        if entry.httpURL != nil { return "link" }
+        return entry.resourceType.iconName
+    }
+}
+
+// MARK: - Gallery card
+
+private struct LibraryGalleryCard: View {
+    @Environment(\.modelContext) private var modelContext
+    let entry: Resource
+    let onOpen: () -> Void
+
+    @State private var isHovering = false
+
+    var body: some View {
+        Button(action: onOpen) {
+            VStack(alignment: .leading, spacing: 10) {
+                LibraryEntryPreview(entry: entry, height: 200)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(entry.title.isEmpty ? "Untitled" : entry.title)
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(SymphoTheme.primaryText)
+                        .lineLimit(1)
+
+                    if !entry.bodyText.isEmpty {
+                        Text(entry.bodyText)
+                            .font(.system(size: 11))
+                            .foregroundStyle(SymphoTheme.secondaryText)
+                            .lineLimit(2)
+                    } else if let host = entry.httpURL?.host {
+                        Text(host)
+                            .font(.system(size: 11))
+                            .foregroundStyle(SymphoTheme.secondaryText)
+                            .lineLimit(1)
+                    }
+
+                    HStack(spacing: 8) {
+                        if let domain = entry.domain {
+                            Label(domain.title, systemImage: DomainIcon.validated(domain.iconName)).lineLimit(1)
+                        }
+                        Spacer()
+                        Text(entry.updatedAt.libraryRelativeLabel)
+                    }
+                    .font(.system(size: 10))
+                    .foregroundStyle(SymphoTheme.tertiaryText)
+                }
+                .padding(.horizontal, 4)
+                .padding(.bottom, 4)
+            }
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .buttonStyle(.plain)
+        .background {
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(SymphoTheme.elevatedCanvas.opacity(isHovering ? 0.86 : 0.62))
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(isHovering ? SymphoTheme.primaryText.opacity(0.16) : SymphoTheme.dividerColor, lineWidth: 1)
+        }
+        .overlay(alignment: .topLeading) {
+            LibraryStatusBadge(status: entry.libraryStatus).padding(12)
+        }
+        .overlay(alignment: .topTrailing) {
+            if isHovering {
+                LibraryCardHoverActions(entry: entry).padding(10).transition(.opacity)
+            }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .onHover { hovering in
+            withAnimation(.easeInOut(duration: 0.12)) { isHovering = hovering }
+        }
+        .libraryEntryContextMenu(entry: entry, modelContext: modelContext, onOpen: onOpen)
+    }
+}
+
+// MARK: - Add Link sheet
+
+private struct AddLibraryLinkSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.modelContext) private var modelContext
+    var initialDomain: Domain?
+    var initialProject: Project?
+
+    @State private var urlText = ""
+    @State private var title = ""
+    @State private var isFetching = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack(spacing: 12) {
+                Image(systemName: "link")
+                    .font(.system(size: 18, weight: .medium))
+                    .foregroundStyle(SymphoTheme.primaryText)
+                    .frame(width: 42, height: 42)
+                    .glassEffect(.regular, in: .rect(cornerRadius: 12))
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Add Link").font(.system(size: 16, weight: .semibold))
+                    Text("Save a web page to your Library.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(SymphoTheme.secondaryText)
+                }
+            }
+
+            LibraryInputRow(title: "URL", iconName: "globe") {
+                TextField("https://…", text: $urlText)
+                    .textFieldStyle(.plain)
+                    .onSubmit(fetchTitleIfPossible)
+            }
+
+            LibraryInputRow(title: "Title", iconName: "textformat") {
+                TextField("Optional — auto-filled from the page", text: $title)
+                    .textFieldStyle(.plain)
+            }
+
+            HStack(spacing: 10) {
+                if isFetching {
+                    ProgressView().controlSize(.small)
+                    Text("Fetching page…").font(.system(size: 11)).foregroundStyle(SymphoTheme.secondaryText)
+                }
+                Spacer()
+                Button("Cancel") { dismiss() }
+                    .buttonStyle(SymphoSecondaryButtonStyle())
+                Button("Add Link") { save() }
+                    .buttonStyle(SymphoPrimaryButtonStyle())
+                    .disabled(normalizedURL == nil)
+                    .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(22)
+        #if os(macOS)
+        .frame(width: 460)
+        #endif
+        .background(SymphoTheme.primaryCanvas)
+    }
+
+    private var normalizedURL: URL? {
+        var text = urlText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return nil }
+        let lower = text.lowercased()
+        if !lower.hasPrefix("http://") && !lower.hasPrefix("https://") {
+            text = "https://" + text
+        }
+        guard let url = URL(string: text), url.host != nil else { return nil }
+        return url
+    }
+
+    private func fetchTitleIfPossible() {
+        guard title.trimmingCharacters(in: .whitespaces).isEmpty, let url = normalizedURL else { return }
+        isFetching = true
+        Task {
+            let metadata = await LinkMetadataService.shared.metadata(for: url)
+            if let fetched = metadata.title, title.trimmingCharacters(in: .whitespaces).isEmpty {
+                title = fetched
+            }
+            isFetching = false
+        }
+    }
+
+    private func save() {
+        guard let url = normalizedURL else { return }
+        let typedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        isFetching = true
+        Task {
+            var resolvedTitle = typedTitle
+            if resolvedTitle.isEmpty {
+                let metadata = await LinkMetadataService.shared.metadata(for: url)
+                resolvedTitle = metadata.title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            }
+
+            let entry = Resource(
+                title: resolvedTitle.isEmpty ? (url.host ?? url.absoluteString) : resolvedTitle,
+                urlString: url.absoluteString,
+                resourceType: .url,
+                domain: initialDomain ?? initialProject?.domain
+            )
+            if let initialProject {
+                entry.projects.append(initialProject)
+            }
+            modelContext.insert(entry)
+            try? modelContext.save()
+            isFetching = false
+            dismiss()
+        }
+    }
+}
+
+/// Presents a Library resource as a self-contained sheet — used on iOS when a
+/// resource is opened from Home so it appears in place instead of switching tabs.
+struct ResourceDetailSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    let resource: Resource
+
+    var body: some View {
+        LibraryEntryDetailView(entry: resource, backTitle: "", onBack: { dismiss() })
+            .appContentBackground()
+    }
+}
+
 private struct LibraryEntryDetailView: View {
     @Environment(\.openURL) private var openURL
     @Environment(\.modelContext) private var modelContext
@@ -833,6 +1937,7 @@ private struct LibraryEntryDetailView: View {
 
     @State private var showsCompactTitle = false
     @State private var selectedFilePreview: LibraryPreviewFile?
+    @State private var isDropTargeted = false
 
     init(entry: Resource, backTitle: String = "Library", onBack: @escaping () -> Void) {
         self.entry = entry
@@ -973,8 +2078,51 @@ private struct LibraryEntryDetailView: View {
         .onDisappear {
             saveChanges()
         }
+        .task(id: entry.id) {
+            guard entry.needsGeneratedTitle, title == entry.title, let url = entry.httpURL else { return }
+            let metadata = await LinkMetadataService.shared.metadata(for: url)
+            if let fetched = metadata.title?.trimmingCharacters(in: .whitespacesAndNewlines), !fetched.isEmpty {
+                title = fetched
+            }
+        }
+        .dropDestination(for: URL.self) { urls, _ in
+            addFiles(urls)
+            return true
+        } isTargeted: { targeted in
+            withAnimation(.easeInOut(duration: 0.15)) { isDropTargeted = targeted }
+        }
+        .overlay {
+            if isDropTargeted {
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .strokeBorder(style: StrokeStyle(lineWidth: 2, dash: [7]))
+                    .foregroundStyle(SymphoTheme.primaryText.opacity(0.35))
+                    .overlay {
+                        Label("Drop to attach to this entry", systemImage: "paperclip")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(SymphoTheme.secondaryText)
+                    }
+                    .padding(12)
+                    .allowsHitTesting(false)
+            }
+        }
     }
-    
+
+    private func addFiles(_ urls: [URL]) {
+        let fileURLs = CaptureFileDropLoader.normalizedFileURLs(urls)
+        guard !fileURLs.isEmpty else { return }
+
+        for url in fileURLs {
+            guard let imported = try? LibraryStorage.importFile(from: url, entryID: entry.id, entryTitle: entry.title) else { continue }
+            let attachment = LibraryAttachment(imported: imported, resource: entry)
+            modelContext.insert(attachment)
+            entry.attachments.append(attachment)
+        }
+
+        entry.updatedAt = Date()
+        entry.isSynced = false
+        try? modelContext.save()
+    }
+
     private var detailHeader: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack(spacing: 8) {
@@ -993,6 +2141,10 @@ private struct LibraryEntryDetailView: View {
                 .buttonStyle(.glass)
                 .buttonBorderShape(.circle)
                 .help(entry.isPinned ? "Unpin from Home" : "Pin to Home")
+
+                Spacer(minLength: 8)
+
+                LibraryStatusControl(entry: entry, style: .full)
             }
 
             HStack(alignment: .top, spacing: 16) {
@@ -1366,7 +2518,9 @@ private struct CreateLibraryEntrySheet: View {
             }
         }
         .padding(22)
+        #if os(macOS)
         .frame(width: 560)
+        #endif
         .background(SymphoTheme.primaryCanvas)
         .fileImporter(
             isPresented: $showsFileImporter,
@@ -1611,19 +2765,20 @@ private struct LibraryImageViewer: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .padding(18)
         }
+        #if os(macOS)
         .frame(minWidth: 680, minHeight: 520)
+        #endif
         .background(SymphoTheme.primaryCanvas)
     }
 }
 
 private struct LibraryLocalImage: View {
     let url: URL
-    @State private var image: NSImage?
+    @State private var image: PlatformImage?
 
     var body: some View {
-        #if os(macOS)
         if let image {
-            Image(nsImage: image)
+            Image(platformImage: image)
                 .resizable()
         } else {
             fallback
@@ -1631,9 +2786,6 @@ private struct LibraryLocalImage: View {
                     image = await LibraryFullImageCache.shared.image(for: url)
                 }
         }
-        #else
-        fallback
-        #endif
     }
 
     private var fallback: some View {
@@ -1648,32 +2800,24 @@ private struct LibraryRemoteThumbnail: View {
     let url: URL
     let fallbackIcon: String
 
-    #if os(macOS)
-    @State private var image: NSImage?
-    #endif
+    @State private var image: PlatformImage?
 
     var body: some View {
         Group {
-            #if os(macOS)
             if let image {
-                Image(nsImage: image)
+                Image(platformImage: image)
                     .resizable()
                     .scaledToFill()
             } else {
                 remotePlaceholder
             }
-            #else
-            remotePlaceholder
-            #endif
         }
         .frame(minWidth: 0, maxWidth: .infinity)
         .frame(height: 126)
         .clipped()
-        #if os(macOS)
         .task(id: url) {
             image = await LibraryRemoteThumbnailCache.shared.image(for: url)
         }
-        #endif
     }
 
     private var remotePlaceholder: some View {
@@ -1691,17 +2835,14 @@ private struct LibraryRemoteThumbnail: View {
 private struct LibraryAttachmentThumbnail: View {
     let attachment: LibraryDisplayAttachment
 
-    #if os(macOS)
-    @State private var thumbnail: NSImage?
-    #endif
+    @State private var thumbnail: PlatformImage?
 
     var body: some View {
         ZStack {
             SymphoTheme.secondarySurface.opacity(0.55)
 
-            #if os(macOS)
             if let thumbnail {
-                Image(nsImage: thumbnail)
+                Image(platformImage: thumbnail)
                     .resizable()
                     .scaledToFill()
                     .frame(minWidth: 0, maxWidth: .infinity)
@@ -1710,14 +2851,10 @@ private struct LibraryAttachmentThumbnail: View {
             } else {
                 fallback
             }
-            #else
-            fallback
-            #endif
         }
         .frame(height: 126)
         .frame(maxWidth: .infinity)
         .clipped()
-        #if os(macOS)
         .task(id: attachment.id) {
             guard let url = attachment.url else { return }
             thumbnail = await LibraryThumbnailCache.shared.thumbnail(
@@ -1725,7 +2862,6 @@ private struct LibraryAttachmentThumbnail: View {
                 contentType: attachment.contentType
             )
         }
-        #endif
     }
 
     private var fallback: some View {
@@ -1738,13 +2874,12 @@ private struct LibraryAttachmentThumbnail: View {
 
 }
 
-#if os(macOS)
 @MainActor
 private final class LibraryRemoteThumbnailCache {
     static let shared = LibraryRemoteThumbnailCache()
 
-    private let cache = NSCache<NSURL, NSImage>()
-    private var inFlight: [URL: Task<NSImage?, Never>] = [:]
+    private let cache = NSCache<NSURL, PlatformImage>()
+    private var inFlight: [URL: Task<PlatformImage?, Never>] = [:]
     private lazy var session: URLSession = {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.httpMaximumConnectionsPerHost = 4
@@ -1758,7 +2893,7 @@ private final class LibraryRemoteThumbnailCache {
         cache.totalCostLimit = 24 * 1024 * 1024
     }
 
-    func image(for url: URL) async -> NSImage? {
+    func image(for url: URL) async -> PlatformImage? {
         if let cached = cache.object(forKey: url as NSURL) {
             return cached
         }
@@ -1767,7 +2902,7 @@ private final class LibraryRemoteThumbnailCache {
             return await task.value
         }
 
-        let task = Task<NSImage?, Never> {
+        let task = Task<PlatformImage?, Never> {
             guard !Task.isCancelled else { return nil }
 
             do {
@@ -1775,7 +2910,7 @@ private final class LibraryRemoteThumbnailCache {
                 guard !Task.isCancelled,
                       let http = response as? HTTPURLResponse,
                       (200 ... 299).contains(http.statusCode),
-                      let image = NSImage(data: data) else {
+                      let image = PlatformImage(data: data) else {
                     return nil
                 }
 
@@ -1790,14 +2925,10 @@ private final class LibraryRemoteThumbnailCache {
         inFlight[url] = nil
 
         if let image {
-            cache.setObject(image, forKey: url as NSURL, cost: imageCost(image))
+            cache.setObject(image, forKey: url as NSURL, cost: image.cacheCost)
         }
 
         return image
-    }
-
-    private func imageCost(_ image: NSImage) -> Int {
-        Int(image.size.width * image.size.height * 4)
     }
 }
 
@@ -1805,21 +2936,21 @@ private final class LibraryRemoteThumbnailCache {
 private final class LibraryFullImageCache {
     static let shared = LibraryFullImageCache()
 
-    private let cache = NSCache<NSURL, NSImage>()
+    private let cache = NSCache<NSURL, PlatformImage>()
 
     private init() {
         cache.countLimit = 12
         cache.totalCostLimit = 96 * 1024 * 1024
     }
 
-    func image(for url: URL) async -> NSImage? {
+    func image(for url: URL) async -> PlatformImage? {
         if let cached = cache.object(forKey: url as NSURL) {
             return cached
         }
 
         let data = LibraryStorage.data(at: url)
-        guard let data, let image = NSImage(data: data) else { return nil }
-        cache.setObject(image, forKey: url as NSURL, cost: Int(image.size.width * image.size.height * 4))
+        guard let data, let image = PlatformImage(data: data) else { return nil }
+        cache.setObject(image, forKey: url as NSURL, cost: image.cacheCost)
         return image
     }
 }
@@ -1828,15 +2959,15 @@ private final class LibraryFullImageCache {
 private final class LibraryThumbnailCache {
     static let shared = LibraryThumbnailCache()
 
-    private let cache = NSCache<NSURL, NSImage>()
-    private var requests: [URL: Task<NSImage?, Never>] = [:]
+    private let cache = NSCache<NSURL, PlatformImage>()
+    private var requests: [URL: Task<PlatformImage?, Never>] = [:]
 
     private init() {
         cache.countLimit = 96
         cache.totalCostLimit = 48 * 1024 * 1024
     }
 
-    func thumbnail(for url: URL, contentType: String) async -> NSImage? {
+    func thumbnail(for url: URL, contentType: String) async -> PlatformImage? {
         if let cached = cache.object(forKey: url as NSURL) {
             return cached
         }
@@ -1851,15 +2982,13 @@ private final class LibraryThumbnailCache {
         requests[url] = nil
 
         if let image {
-            cache.setObject(image, forKey: url as NSURL, cost: imageCost(image))
+            cache.setObject(image, forKey: url as NSURL, cost: image.cacheCost)
         }
 
         return image
     }
 
-    private func generateThumbnail(for url: URL, contentType: String) async -> NSImage? {
-        guard FileManager.default.isReadableFile(atPath: url.path) else { return nil }
-
+    private func generateThumbnail(for url: URL, contentType: String) async -> PlatformImage? {
         let type = UTType(contentType) ?? UTType(filenameExtension: url.pathExtension)
         if type?.conforms(to: .plainText) == true || url.pathExtension.lowercased() == "md" {
             return nil
@@ -1877,14 +3006,13 @@ private final class LibraryThumbnailCache {
         return thumbnail
     }
 
-    private func loadImageThumbnail(at url: URL) -> NSImage? {
+    private func loadImageThumbnail(at url: URL) -> PlatformImage? {
         LibraryStorage.withWorkspaceAccess {
-            guard let data = try? Data(contentsOf: url, options: [.mappedIfSafe]),
-                  let image = NSImage(data: data) else {
+            guard let data = try? Data(contentsOf: url, options: [.mappedIfSafe]) else {
                 return nil
             }
 
-            return downsampled(image, maxPixelSize: 460)
+            return symphoDownsampledImage(data: data, maxPixelSize: 460)
         }
     }
 
@@ -1897,45 +3025,24 @@ private final class LibraryThumbnailCache {
             || type.conforms(to: .audiovisualContent)
     }
 
-    private func quickLookThumbnail(at url: URL) async -> NSImage? {
+    private func quickLookThumbnail(at url: URL) async -> PlatformImage? {
         await withCheckedContinuation { continuation in
-            LibraryStorage.withWorkspaceAccess {
-                let request = QLThumbnailGenerator.Request(
-                    fileAt: url,
-                    size: CGSize(width: 460, height: 264),
-                    scale: NSScreen.main?.backingScaleFactor ?? 2,
-                    representationTypes: .thumbnail
-                )
+            // Quick Look reads asynchronously, so workspace access must outlive the
+            // request call and remain active until its completion handler runs.
+            let access = LibraryStorage.scopedAccess(forResolvedURL: url)
+            let request = QLThumbnailGenerator.Request(
+                fileAt: url,
+                size: CGSize(width: 460, height: 264),
+                scale: PlatformScreen.scale,
+                representationTypes: .thumbnail
+            )
 
-                QLThumbnailGenerator.shared.generateBestRepresentation(for: request) { thumbnail, _ in
-                    continuation.resume(returning: thumbnail?.nsImage)
+            QLThumbnailGenerator.shared.generateBestRepresentation(for: request) { thumbnail, _ in
+                withExtendedLifetime(access) {
+                    continuation.resume(returning: thumbnail?.platformImage)
                 }
             }
         }
-    }
-
-    private func downsampled(_ image: NSImage, maxPixelSize: CGFloat) -> NSImage {
-        let longest = max(image.size.width, image.size.height)
-        guard longest > maxPixelSize, longest > 0 else { return image }
-
-        let scale = maxPixelSize / longest
-        let target = NSSize(width: image.size.width * scale, height: image.size.height * scale)
-        let scaled = NSImage(size: target)
-        scaled.lockFocus()
-        image.draw(
-            in: NSRect(origin: .zero, size: target),
-            from: .zero,
-            operation: .copy,
-            fraction: 1,
-            respectFlipped: true,
-            hints: [.interpolation: NSImageInterpolation.high]
-        )
-        scaled.unlockFocus()
-        return scaled
-    }
-
-    private func imageCost(_ image: NSImage) -> Int {
-        Int(image.size.width * image.size.height * 4)
     }
 }
 
@@ -1962,7 +3069,6 @@ private actor QLThumbnailGate {
         waiters.removeFirst().resume()
     }
 }
-#endif
 
 private struct LibraryScrollChrome: ViewModifier {
     let title: String
