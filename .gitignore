@@ -31,6 +31,10 @@ Package.resolved
 # Cursor / local tooling
 .cursor/
 
+# Generated local verification and rendering artifacts
+/tmp/
+/Sympho/tmp/
+
 # Secrets
 .env
 .env.*
