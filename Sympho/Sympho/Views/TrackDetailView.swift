@@ -113,8 +113,8 @@ struct TrackDetailView: View {
             SymphoGlassBackButton(title: backTitle, action: onBack)
 
             HStack(alignment: .top, spacing: 14) {
-                Image(systemName: "point.topleft.down.curvedto.point.bottomright.up")
-                    .font(.system(size: 22, weight: .medium))
+                SymphoGlyphView(emoji: track.emoji, iconName: track.iconName,
+                                fallbackSystemName: "point.topleft.down.curvedto.point.bottomright.up", size: 22)
                     .foregroundStyle(SymphoTheme.primaryText)
                     .frame(width: 52, height: 52)
                     .glassEffect(.regular, in: .rect(cornerRadius: 16))

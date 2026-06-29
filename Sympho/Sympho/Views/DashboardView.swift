@@ -48,8 +48,13 @@ struct DashboardView: View {
     }
 
     private var recentItems: [HomeFeedItem] {
+        let nodeAttachedResourceIDs = Set(
+            allNodes.flatMap { node in
+                node.resources.filter { !$0.isDeletedLocally }.map(\.id)
+            }
+        )
         let resources = allResources
-            .filter { !$0.isPinned }
+            .filter { !$0.isPinned && !nodeAttachedResourceIDs.contains($0.id) }
             .map(HomeFeedItem.from(resource:))
         let nodes = allNodes
             .filter { !$0.isPinned && (!$0.desc.isEmpty || !$0.resources.isEmpty) }

@@ -19,7 +19,7 @@ struct NodeMaterialsSection: View {
     @State private var importErrorMessage: String?
 
     private var activeResources: [Resource] {
-        node.resources.filter { !$0.isDeletedLocally }
+        node.resources.filter { !$0.isDeletedLocally }.uniqueByID()
     }
 
     private var resolvedDomain: Domain? {

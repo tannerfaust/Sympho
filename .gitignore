@@ -39,3 +39,6 @@ Package.resolved
 .env
 .env.*
 *.pem
+
+# Local MCP config — contains Sympho bearer token, do not commit
+.mcp.json

@@ -121,9 +121,16 @@ struct NodeDetailView: View {
                     .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
                     .overlay(RoundedRectangle(cornerRadius: 6).stroke(SymphoTheme.dividerColor, lineWidth: 1))
                 } else {
-                    Text(node.title)
-                        .font(.system(size: 20, weight: .bold))
-                        .foregroundStyle(SymphoTheme.primaryText)
+                    HStack(spacing: 9) {
+                        if !node.emoji.isEmpty || !node.iconName.isEmpty {
+                            SymphoGlyphView(emoji: node.emoji, iconName: node.iconName,
+                                            fallbackSystemName: "circle.hexagonpath", size: 20)
+                                .foregroundStyle(SymphoTheme.secondaryText)
+                        }
+                        Text(node.title)
+                            .font(.system(size: 20, weight: .bold))
+                            .foregroundStyle(SymphoTheme.primaryText)
+                    }
 
                     SymphoNoteBody(
                         text: node.desc,

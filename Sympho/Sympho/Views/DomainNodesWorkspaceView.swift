@@ -27,6 +27,7 @@ struct DomainNodesWorkspaceView: View {
     @State private var draggedNodeID: UUID?
     @State private var showInlineAddNode = false
     @State private var newNodeTitle = ""
+    @State private var isSavingNewNode = false
 
     private var filteredSortedNodes: [Node] {
         var list = nodes
@@ -170,7 +171,10 @@ struct DomainNodesWorkspaceView: View {
 
     private func saveNewNode() {
         let title = newNodeTitle.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !title.isEmpty, let module = targetModuleForNewNode else { return }
+        guard !title.isEmpty, !isSavingNewNode, let module = targetModuleForNewNode else { return }
+
+        isSavingNewNode = true
+        defer { isSavingNewNode = false }
 
         let newNode = Node(
             title: title,
@@ -180,7 +184,6 @@ struct DomainNodesWorkspaceView: View {
             module: module
         )
         modelContext.insert(newNode)
-        module.nodes.append(newNode)
         module.isSynced = false
         module.updatedAt = Date()
         track?.isSynced = false
@@ -485,8 +488,8 @@ struct DomainNodeCard: View {
                         Circle()
                             .fill(SymphoTheme.primaryCanvas)
                             .frame(width: 40, height: 40)
-                        Image(systemName: DomainNodeVisuals.statusIcon(node.status))
-                            .font(.system(size: 18, weight: .medium))
+                        SymphoGlyphView(emoji: node.emoji, iconName: node.iconName,
+                                        fallbackSystemName: DomainNodeVisuals.statusIcon(node.status), size: 18)
                             .foregroundStyle(DomainNodeVisuals.statusColor(node.status))
                     }
                     .overlay {

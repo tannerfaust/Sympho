@@ -96,8 +96,8 @@ struct ModuleDetailView: View {
             SymphoGlassBackButton(title: backTitle, action: onBack)
 
             HStack(alignment: .top, spacing: 14) {
-                Image(systemName: "square.stack.3d.up")
-                    .font(.system(size: 22, weight: .medium))
+                SymphoGlyphView(emoji: module.emoji, iconName: module.iconName,
+                                fallbackSystemName: "square.stack.3d.up", size: 22)
                     .foregroundStyle(SymphoTheme.primaryText)
                     .frame(width: 52, height: 52)
                     .glassEffect(.regular, in: .rect(cornerRadius: 16))

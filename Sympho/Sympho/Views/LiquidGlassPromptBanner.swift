@@ -171,7 +171,6 @@ struct LiquidGlassPromptBanner: View {
     private func createTrack(title: String) {
         let newTrack = Track(title: title, desc: "", domain: domain)
         modelContext.insert(newTrack)
-        domain.tracks.append(newTrack)
         domain.isSynced = false
         try? modelContext.save()
         
@@ -190,10 +189,8 @@ struct LiquidGlassPromptBanner: View {
         modelContext.insert(newModule)
         
         if let t = resolvedTrack {
-            t.modules.append(newModule)
             t.isSynced = false
         } else {
-            domain.modules.append(newModule)
             domain.isSynced = false
         }
         try? modelContext.save()
@@ -214,7 +211,6 @@ struct LiquidGlassPromptBanner: View {
             module: finalModule
         )
         modelContext.insert(newNode)
-        finalModule.nodes.append(newNode)
         finalModule.isSynced = false
         try? modelContext.save()
         

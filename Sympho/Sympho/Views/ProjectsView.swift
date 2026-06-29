@@ -188,8 +188,8 @@ private struct ProjectCard: View {
         Button(action: onOpen) {
             VStack(alignment: .leading, spacing: 16) {
                 HStack(alignment: .top) {
-                    Image(systemName: "folder")
-                        .font(.system(size: 20, weight: .medium))
+                    SymphoGlyphView(emoji: project.emoji, iconName: project.iconName,
+                                    fallbackSystemName: "folder", size: 20)
                         .foregroundStyle(SymphoTheme.primaryText)
                         .frame(width: 46, height: 46)
                         .glassEffect(.regular, in: .rect(cornerRadius: 14))
@@ -426,8 +426,8 @@ struct ProjectDetailView: View {
             SymphoGlassBackButton(title: backTitle, action: onBack)
 
             HStack(alignment: .top, spacing: 16) {
-                Image(systemName: "folder")
-                    .font(.system(size: 22, weight: .medium))
+                SymphoGlyphView(emoji: project.emoji, iconName: project.iconName,
+                                fallbackSystemName: "folder", size: 22)
                     .foregroundStyle(SymphoTheme.primaryText)
                     .frame(width: 54, height: 54)
                     .glassEffect(.regular, in: .rect(cornerRadius: 16))
@@ -667,7 +667,6 @@ private struct CreateProjectNodeSheet: View {
                 project: project
             )
             modelContext.insert(node)
-            project.nodes.append(node)
             project.updatedAt = Date()
             project.isSynced = false
             try? modelContext.save()

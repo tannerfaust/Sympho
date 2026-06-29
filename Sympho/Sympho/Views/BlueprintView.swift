@@ -32,7 +32,10 @@ enum RoadmapEditTarget: Identifiable {
 
 private struct RoadmapModuleBlock: View {
     let module: Module
+    var index: Int? = nil
     var onSelect: () -> Void
+
+    @State private var isHovering = false
 
     private var nodeCount: Int {
         module.nodes.filter { !$0.isDeletedLocally }.count
@@ -41,40 +44,46 @@ private struct RoadmapModuleBlock: View {
     var body: some View {
         Button(action: onSelect) {
             HStack(spacing: 10) {
+                if let index {
+                    Text("\(index)")
+                        .font(.system(size: 11, weight: .semibold, design: .rounded))
+                        .foregroundStyle(SymphoTheme.tertiaryText)
+                        .frame(width: 20, alignment: .center)
+                }
+
                 Image(systemName: "square.stack.3d.up")
                     .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(SymphoTheme.secondaryText)
-                    .frame(width: 34, height: 34)
-                    .background(SymphoTheme.elevatedCanvas.opacity(0.9), in: .rect(cornerRadius: 9))
+                    .frame(width: 32, height: 32)
+                    .background(SymphoTheme.elevatedCanvas.opacity(0.9), in: .rect(cornerRadius: 8))
 
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("MODULE")
-                        .font(.system(size: 9, weight: .bold))
-                        .foregroundStyle(SymphoTheme.tertiaryText)
-                        .tracking(0.5)
-
-                    Text(module.title)
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(SymphoTheme.primaryText)
-                        .lineLimit(2)
-                        .multilineTextAlignment(.leading)
-                }
+                Text(module.title)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(SymphoTheme.primaryText)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
 
                 Spacer(minLength: 8)
 
                 Text(nodeCount == 1 ? "1 node" : "\(nodeCount) nodes")
                     .font(.system(size: 10, weight: .medium))
                     .foregroundStyle(SymphoTheme.secondaryText)
+
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(SymphoTheme.tertiaryText)
+                    .opacity(isHovering ? 1 : 0.4)
             }
             .padding(11)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(SymphoTheme.primaryCanvas.opacity(0.72), in: .rect(cornerRadius: 11))
+            .background(SymphoTheme.primaryCanvas.opacity(isHovering ? 0.9 : 0.72), in: .rect(cornerRadius: 11))
             .overlay {
                 RoundedRectangle(cornerRadius: 11, style: .continuous)
-                    .stroke(SymphoTheme.dividerColor, lineWidth: 1)
+                    .stroke(isHovering ? SymphoTheme.primaryText.opacity(0.14) : SymphoTheme.dividerColor, lineWidth: 1)
             }
         }
         .buttonStyle(.plain)
+        .onHover { isHovering = $0 }
     }
 }
 
@@ -166,8 +175,8 @@ struct DomainRoadmapView: View {
                 roadmapEmptyState
             } else {
                 VStack(spacing: 10) {
-                    ForEach(sortedTracks) { track in
-                        trackCard(track)
+                    ForEach(Array(sortedTracks.enumerated()), id: \.element.id) { trackIndex, track in
+                        trackCard(track, index: trackIndex + 1)
                             #if os(macOS)
                             .onDrag {
                                 draggedTrackID = track.id
@@ -259,12 +268,12 @@ struct DomainRoadmapView: View {
     }
 
     @ViewBuilder
-    private func trackCard(_ track: Track) -> some View {
+    private func trackCard(_ track: Track, index: Int) -> some View {
         let isExpanded = expandedTrackIDs.contains(track.id)
         let modules = track.modules.filter { !$0.isDeletedLocally }.roadmapSorted()
 
         VStack(alignment: .leading, spacing: 0) {
-            HStack(alignment: .top, spacing: 10) {
+            HStack(alignment: .center, spacing: 10) {
                 Button {
                     toggleTrack(track.id)
                 } label: {
@@ -274,25 +283,15 @@ struct DomainRoadmapView: View {
                         .rotationEffect(.degrees(isExpanded ? 90 : 0))
                         .frame(width: 28, height: 28)
                         .contentShape(Circle())
-                        .glassEffect(.regular, in: .circle)
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(isExpanded ? "Collapse track" : "Expand track")
 
+                OrdinalBadge(number: index)
+
                 Button(action: { onSelectTrack(track) }) {
-                    HStack(alignment: .top, spacing: 12) {
-                        Image(systemName: "point.topleft.down.curvedto.point.bottomright.up")
-                            .font(.system(size: 18, weight: .medium))
-                            .foregroundStyle(SymphoTheme.primaryText)
-                            .frame(width: 40, height: 40)
-                            .glassEffect(.regular, in: .rect(cornerRadius: 12))
-
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("TRACK")
-                                .font(.system(size: 9, weight: .bold))
-                                .foregroundStyle(SymphoTheme.tertiaryText)
-                                .tracking(0.5)
-
+                    HStack(alignment: .center, spacing: 12) {
+                        VStack(alignment: .leading, spacing: 3) {
                             Text(track.title)
                                 .font(.system(size: 15, weight: .semibold))
                                 .foregroundStyle(SymphoTheme.primaryText)
@@ -300,14 +299,18 @@ struct DomainRoadmapView: View {
                                 .multilineTextAlignment(.leading)
 
                             HStack(spacing: 12) {
-                                Label("\(modules.count) modules", systemImage: "square.stack.3d.up")
-                                Label("\(track.allNodes.count) nodes", systemImage: "circle.hexagonpath")
+                                Label("\(modules.count) module\(modules.count == 1 ? "" : "s")", systemImage: "square.stack.3d.up")
+                                Label("\(track.allNodes.count) node\(track.allNodes.count == 1 ? "" : "s")", systemImage: "circle.hexagonpath")
                             }
                             .font(.system(size: 10, weight: .medium))
                             .foregroundStyle(SymphoTheme.secondaryText)
                         }
 
                         Spacer(minLength: 0)
+
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(SymphoTheme.tertiaryText)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
@@ -321,8 +324,8 @@ struct DomainRoadmapView: View {
 
             if isExpanded {
                 VStack(spacing: 8) {
-                    ForEach(modules) { module in
-                        RoadmapModuleBlock(module: module) {
+                    ForEach(Array(modules.enumerated()), id: \.element.id) { moduleIndex, module in
+                        RoadmapModuleBlock(module: module, index: moduleIndex + 1) {
                             onSelectModule(module)
                         }
                         .contextMenu {
@@ -384,8 +387,8 @@ struct DomainRoadmapView: View {
             .padding(.top, 14)
 
             VStack(spacing: 8) {
-                ForEach(sortedStandaloneModules) { module in
-                    RoadmapModuleBlock(module: module) {
+                ForEach(Array(sortedStandaloneModules.enumerated()), id: \.element.id) { moduleIndex, module in
+                    RoadmapModuleBlock(module: module, index: moduleIndex + 1) {
                         onSelectModule(module)
                     }
                     .contextMenu {
@@ -652,8 +655,8 @@ struct TrackRoadmapView: View {
                     .background(SymphoTheme.elevatedCanvas.opacity(0.5), in: .rect(cornerRadius: 14))
             } else {
                 VStack(spacing: 8) {
-                    ForEach(modules) { module in
-                        RoadmapModuleBlock(module: module) {
+                    ForEach(Array(modules.enumerated()), id: \.element.id) { moduleIndex, module in
+                        RoadmapModuleBlock(module: module, index: moduleIndex + 1) {
                             onSelectModule(module)
                         }
                         .contextMenu {

@@ -9,6 +9,14 @@ import Foundation
 import SwiftData
 import SwiftUI
 
+extension Array where Element: Identifiable, Element.ID == UUID {
+    /// Keeps first occurrence when relationship arrays contain duplicate references.
+    func uniqueByID() -> [Element] {
+        var seen = Set<UUID>()
+        return filter { seen.insert($0.id).inserted }
+    }
+}
+
 // MARK: - Enums for Statuses and Types
 
 enum NodeStatus: String, Codable, CaseIterable, Identifiable {
@@ -367,7 +375,7 @@ final class Domain: Identifiable {
         for project in projects {
             result.append(contentsOf: project.nodes)
         }
-        return result.filter { !$0.isDeletedLocally }
+        return result.filter { !$0.isDeletedLocally }.uniqueByID()
     }
     
     // Trickle-up helper to get all resources nested anywhere inside this Domain
@@ -406,6 +414,10 @@ final class Track: Identifiable {
     var title: String
     var desc: String
     var sortIndex: Int = 0
+    /// Optional emoji shown as the track's glyph (takes precedence over `iconName`).
+    var emoji: String = ""
+    /// Optional SF Symbol name shown as the track's glyph when no emoji is set.
+    var iconName: String = ""
     var createdAt: Date
     var updatedAt: Date
     
@@ -433,7 +445,7 @@ final class Track: Identifiable {
     }
     
     var allNodes: [Node] {
-        modules.flatMap { $0.nodes }.filter { !$0.isDeletedLocally }
+        modules.flatMap { $0.nodes }.filter { !$0.isDeletedLocally }.uniqueByID()
     }
     
     var progress: Double {
@@ -478,6 +490,10 @@ final class Module: Identifiable {
     var title: String
     var desc: String
     var sortIndex: Int = 0
+    /// Optional emoji shown as the module's glyph (takes precedence over `iconName`).
+    var emoji: String = ""
+    /// Optional SF Symbol name shown as the module's glyph when no emoji is set.
+    var iconName: String = ""
     var createdAt: Date
     var updatedAt: Date
     
@@ -508,6 +524,7 @@ final class Module: Identifiable {
     var activeNodes: [Node] {
         nodes
             .filter { !$0.isDeletedLocally }
+            .uniqueByID()
             .sorted { lhs, rhs in
                 if lhs.sortIndex != rhs.sortIndex { return lhs.sortIndex < rhs.sortIndex }
                 return lhs.createdAt < rhs.createdAt
@@ -542,9 +559,13 @@ final class Project: Identifiable {
     var desc: String
     var statusValue: String
     var isPinned: Bool
+    /// Optional emoji shown as the project's glyph (takes precedence over `iconName`).
+    var emoji: String = ""
+    /// Optional SF Symbol name shown as the project's glyph when no emoji is set.
+    var iconName: String = ""
     var createdAt: Date
     var updatedAt: Date
-    
+
     // Relationships
     var domain: Domain?
     var track: Track?
@@ -588,6 +609,10 @@ final class Node: Identifiable {
     var isOrphan: Bool
     var captureIntentValue: String = CaptureIntent.planInbox.rawValue
     var isPinned: Bool = false
+    /// Optional emoji shown as the node's glyph (takes precedence over `iconName`).
+    var emoji: String = ""
+    /// Optional SF Symbol name shown as the node's glyph when no emoji is set.
+    var iconName: String = ""
     var masteredAt: Date?
     var createdAt: Date
     var updatedAt: Date

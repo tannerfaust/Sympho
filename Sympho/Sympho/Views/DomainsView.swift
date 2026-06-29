@@ -1003,7 +1003,13 @@ struct DomainDetailView: View {
         VStack(alignment: .leading, spacing: 14) {
             sectionHeader(
                 title: "Tracks",
+                subtitle: activeTracks.count > 1 ? "Drag to reorder learning sequence." : nil,
                 showsAdd: true,
+                accessory: {
+                    if !activeTracks.isEmpty {
+                        DomainLayoutPicker(layout: $tracksLayout)
+                    }
+                },
                 addAction: { showInlineAddTrack.toggle() }
             )
 
@@ -1017,19 +1023,66 @@ struct DomainDetailView: View {
 
             if activeTracks.isEmpty {
                 emptySectionMessage("No tracks yet.")
-            } else {
+            } else if tracksLayout == .grid {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 320), spacing: 16)], spacing: 16) {
-                    ForEach(activeTracks) { track in
-                        DomainTrackCard(track: track) {
-                            onSelectTrack(track)
-                        } onSelectNode: { node in
-                            onSelectNode(node)
+                    ForEach(Array(activeTracks.enumerated()), id: \.element.id) { index, track in
+                        trackReorderable(track) {
+                            DomainTrackCard(track: track, index: index + 1) {
+                                onSelectTrack(track)
+                            } onSelectNode: { node in
+                                onSelectNode(node)
+                            }
+                        }
+                    }
+                }
+            } else {
+                VStack(spacing: 8) {
+                    ForEach(Array(activeTracks.enumerated()), id: \.element.id) { index, track in
+                        trackReorderable(track) {
+                            DomainTrackRow(track: track, index: index + 1) {
+                                onSelectTrack(track)
+                            }
                         }
                     }
                 }
             }
         }
         .padding(.horizontal, SymphoTheme.outerPadding)
+    }
+
+    @ViewBuilder
+    private func trackReorderable<Content: View>(_ track: Track, @ViewBuilder content: () -> Content) -> some View {
+        #if os(macOS)
+        content()
+            .opacity(draggedTrackID == track.id ? 0.45 : 1)
+            .onDrag {
+                draggedTrackID = track.id
+                return NSItemProvider(object: track.id.uuidString as NSString)
+            }
+            .onDrop(
+                of: [.text],
+                delegate: RoadmapReorderDropDelegate(
+                    destinationID: track.id,
+                    orderedIDs: activeTracks.map(\.id),
+                    draggedID: draggedTrackID,
+                    onReorder: applyTrackOrder,
+                    onEnd: { draggedTrackID = nil }
+                )
+            )
+        #else
+        content()
+        #endif
+    }
+
+    private func applyTrackOrder(_ ids: [UUID]) {
+        let byID = Dictionary(uniqueKeysWithValues: activeTracks.map { ($0.id, $0) })
+        for (index, id) in ids.enumerated() {
+            byID[id]?.sortIndex = index
+            byID[id]?.updatedAt = Date()
+        }
+        domain.updatedAt = Date()
+        domain.isSynced = false
+        try? modelContext.save()
     }
 
     // MARK: - Modules
@@ -1039,6 +1092,11 @@ struct DomainDetailView: View {
             sectionHeader(
                 title: "Modules",
                 showsAdd: true,
+                accessory: {
+                    if !allDomainModules.isEmpty {
+                        DomainLayoutPicker(layout: $modulesLayout)
+                    }
+                },
                 addAction: { showInlineAddModule.toggle() }
             )
 
@@ -1052,13 +1110,21 @@ struct DomainDetailView: View {
 
             if allDomainModules.isEmpty {
                 emptySectionMessage("No modules yet.")
-            } else {
+            } else if modulesLayout == .grid {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 320), spacing: 16)], spacing: 16) {
                     ForEach(allDomainModules) { module in
                         DomainModuleCard(module: module) {
                             onSelectModule(module)
                         } onSelectNode: { node in
                             onSelectNode(node)
+                        }
+                    }
+                }
+            } else {
+                VStack(spacing: 8) {
+                    ForEach(allDomainModules) { module in
+                        DomainModuleRow(module: module) {
+                            onSelectModule(module)
                         }
                     }
                 }
@@ -1118,13 +1184,14 @@ struct DomainDetailView: View {
     }
 
     @ViewBuilder
-    private func sectionHeader(
+    private func sectionHeader<Accessory: View>(
         title: String,
         subtitle: String? = nil,
         showsAdd: Bool,
+        @ViewBuilder accessory: () -> Accessory = { EmptyView() },
         addAction: @escaping () -> Void
     ) -> some View {
-        HStack(alignment: .top, spacing: 12) {
+        HStack(alignment: .center, spacing: 12) {
             VStack(alignment: .leading, spacing: 4) {
                 Text(title)
                     .editorialSubtitle()
@@ -1135,6 +1202,8 @@ struct DomainDetailView: View {
             }
 
             Spacer(minLength: 0)
+
+            accessory()
 
             if showsAdd {
                 Button(action: {
@@ -1192,7 +1261,6 @@ struct DomainDetailView: View {
         let nextIndex = activeTracks.map(\.sortIndex).max().map { $0 + 1 } ?? 0
         let newTrack = Track(title: title, desc: "", sortIndex: nextIndex, domain: domain)
         modelContext.insert(newTrack)
-        domain.tracks.append(newTrack)
         domain.isSynced = false
         try? modelContext.save()
         
@@ -1207,7 +1275,6 @@ struct DomainDetailView: View {
         let nextIndex = activeStandaloneModules.map(\.sortIndex).max().map { $0 + 1 } ?? 0
         let newModule = Module(title: title, desc: "", sortIndex: nextIndex, domain: domain)
         modelContext.insert(newModule)
-        domain.modules.append(newModule)
         domain.isSynced = false
         try? modelContext.save()
 
@@ -1221,7 +1288,6 @@ struct DomainDetailView: View {
 
         let project = Project(title: title, desc: "", status: .active, domain: domain)
         modelContext.insert(project)
-        domain.projects.append(project)
         domain.isSynced = false
         try? modelContext.save()
 
@@ -1232,74 +1298,48 @@ struct DomainDetailView: View {
     // MARK: - Local Library
 
     private var localLibraryContent: some View {
-        VStack(alignment: .leading, spacing: SymphoTheme.sectionSpacing) {
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Domain Assets")
-                    .editorialSubtitle()
-                Text("Reference material gathered from tracks, modules, and nodes in this domain.")
-                    .captionSans()
-            }
-
-            let resources = domain.allResources
-                if resources.isEmpty {
-                    VStack(spacing: 8) {
-                        Text("No assets attached inside this domain.")
-                            .font(.system(.body, design: .default))
-                            .foregroundColor(SymphoTheme.secondaryText)
-                        Text("Link PDFs or web addresses to node learning units to see them gathered here.")
-                            .captionSans()
+        let resources = domain.allResources
+        return VStack(alignment: .leading, spacing: 14) {
+            sectionHeader(
+                title: "Resources",
+                subtitle: "Reference material gathered from this domain.",
+                showsAdd: false,
+                accessory: {
+                    if !resources.isEmpty {
+                        DomainLayoutPicker(layout: $resourcesLayout)
                     }
-                    .frame(maxWidth: .infinity, alignment: .center)
-                    .padding(.vertical, 40)
-                    .premiumCard()
-                } else {
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 260))], spacing: SymphoTheme.gridSpacing) {
-                        ForEach(resources) { res in
-                            VStack(alignment: .leading, spacing: 10) {
-                                HStack {
-                                    Image(systemName: res.resourceType.iconName)
-                                        .foregroundColor(SymphoTheme.secondaryText)
-                                    Text(res.resourceType.displayName.uppercased())
-                                        .font(.system(size: 9, weight: .bold))
-                                        .foregroundColor(SymphoTheme.secondaryText)
-                                    Spacer()
-                                }
-                                
-                                Text(res.title)
-                                    .font(.system(.headline, design: .default))
-                                    .foregroundColor(SymphoTheme.primaryText)
-                                    .lineLimit(1)
-                                
-                                if !res.attachments.isEmpty || res.fileRelativePath != nil {
-                                    Label("\(max(res.attachments.count, 1)) attached file\(max(res.attachments.count, 1) == 1 ? "" : "s")", systemImage: "paperclip")
-                                        .font(.caption)
-                                        .foregroundColor(SymphoTheme.secondaryText)
-                                } else if let url = URL(string: res.urlString), !url.isFileURL {
-                                    Link(res.urlString, destination: url)
-                                        .font(.caption)
-                                        .foregroundColor(SymphoTheme.colorActive)
-                                        .lineLimit(1)
-                                } else if !res.urlString.isEmpty {
-                                    Text(res.urlString)
-                                        .font(.caption)
-                                        .foregroundColor(SymphoTheme.secondaryText)
-                                        .lineLimit(1)
-                                }
-                                
-                                // Linked nodes indicator
-                                let nodesText = res.nodes.filter { !$0.isDeletedLocally }.map(\.title).joined(separator: ", ")
-                                if !nodesText.isEmpty {
-                                    Text("Linked to: \(nodesText)")
-                                        .font(.system(size: 10))
-                                        .foregroundColor(SymphoTheme.secondaryText)
-                                        .lineLimit(1)
-                                        .padding(.top, 4)
-                                }
-                            }
-                            .premiumCard()
-                        }
+                },
+                addAction: {}
+            )
+
+            if resources.isEmpty {
+                VStack(spacing: 8) {
+                    Image(systemName: "books.vertical")
+                        .font(.system(size: 26, weight: .light))
+                        .foregroundStyle(SymphoTheme.tertiaryText)
+                    Text("No resources in this domain yet.")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundColor(SymphoTheme.primaryText)
+                    Text("Attach PDFs or links to nodes and they gather here.")
+                        .captionSans()
+                        .multilineTextAlignment(.center)
+                }
+                .frame(maxWidth: .infinity, alignment: .center)
+                .padding(.vertical, 44)
+                .domainListSurface()
+            } else if resourcesLayout == .grid {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 260), spacing: 12)], spacing: 12) {
+                    ForEach(resources) { res in
+                        DomainResourceCard(resource: res)
                     }
                 }
+            } else {
+                VStack(spacing: 8) {
+                    ForEach(resources) { res in
+                        DomainResourceRow(resource: res)
+                    }
+                }
+            }
         }
         .padding(.horizontal, SymphoTheme.outerPadding)
     }
@@ -1386,6 +1426,130 @@ struct DomainProjectCard: View {
     }
 }
 
+// MARK: - Domain resource surfaces
+
+private func domainResourceDetail(for resource: Resource) -> String? {
+    if !resource.attachments.isEmpty || resource.fileRelativePath != nil {
+        let count = max(resource.attachments.count, 1)
+        return "\(count) file\(count == 1 ? "" : "s")"
+    }
+    if let host = URL(string: resource.urlString)?.host, !host.isEmpty {
+        return host
+    }
+    if !resource.urlString.isEmpty {
+        return resource.urlString
+    }
+    return nil
+}
+
+struct DomainResourceCard: View {
+    let resource: Resource
+    @State private var isHovering = false
+
+    private var linkedNodes: String {
+        resource.nodes.filter { !$0.isDeletedLocally }.map(\.title).joined(separator: ", ")
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: resource.resourceType.iconName)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(SymphoTheme.secondaryText)
+                    .frame(width: 32, height: 32)
+                    .background(SymphoTheme.primaryCanvas.opacity(0.8), in: .rect(cornerRadius: 9))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 9, style: .continuous)
+                            .stroke(SymphoTheme.dividerColor, lineWidth: 1)
+                    }
+                Text(resource.resourceType.displayName)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(SymphoTheme.tertiaryText)
+                Spacer(minLength: 0)
+            }
+
+            Text(resource.title)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(SymphoTheme.primaryText)
+                .lineLimit(2)
+                .multilineTextAlignment(.leading)
+
+            if let detail = domainResourceDetail(for: resource) {
+                Label(detail, systemImage: resource.attachments.isEmpty && resource.fileRelativePath == nil ? "link" : "paperclip")
+                    .font(.system(size: 11))
+                    .foregroundStyle(SymphoTheme.secondaryText)
+                    .lineLimit(1)
+            }
+
+            if !linkedNodes.isEmpty {
+                Text("Linked to \(linkedNodes)")
+                    .font(.system(size: 10))
+                    .foregroundStyle(SymphoTheme.tertiaryText)
+                    .lineLimit(1)
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, minHeight: 120, alignment: .topLeading)
+        .background {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(SymphoTheme.elevatedCanvas.opacity(isHovering ? 0.7 : 0.5))
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(isHovering ? SymphoTheme.primaryText.opacity(0.14) : SymphoTheme.dividerColor, lineWidth: 1)
+        }
+        .onHover { isHovering = $0 }
+    }
+}
+
+struct DomainResourceRow: View {
+    let resource: Resource
+    @State private var isHovering = false
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: resource.resourceType.iconName)
+                .font(.system(size: 14, weight: .medium))
+                .foregroundStyle(SymphoTheme.secondaryText)
+                .frame(width: 34, height: 34)
+                .background(SymphoTheme.primaryCanvas.opacity(0.8), in: .rect(cornerRadius: 9))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .stroke(SymphoTheme.dividerColor, lineWidth: 1)
+                }
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(resource.title)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(SymphoTheme.primaryText)
+                    .lineLimit(1)
+                HStack(spacing: 6) {
+                    Text(resource.resourceType.displayName)
+                    if let detail = domainResourceDetail(for: resource) {
+                        Text("·")
+                        Text(detail).lineLimit(1)
+                    }
+                }
+                .font(.system(size: 11))
+                .foregroundStyle(SymphoTheme.secondaryText)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(SymphoTheme.elevatedCanvas.opacity(isHovering ? 0.7 : 0.45))
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(isHovering ? SymphoTheme.primaryText.opacity(0.14) : SymphoTheme.dividerColor, lineWidth: 1)
+        }
+        .onHover { isHovering = $0 }
+    }
+}
+
 private extension View {
     func domainListSurface() -> some View {
         background {
@@ -1452,6 +1616,7 @@ private struct WorkspaceFact: View {
 struct DomainTrackCard: View {
     @Environment(\.modelContext) private var modelContext
     let track: Track
+    var index: Int? = nil
     var onSelect: () -> Void
     var onSelectNode: (Node) -> Void
 
@@ -1469,24 +1634,24 @@ struct DomainTrackCard: View {
     var body: some View {
         Button(action: onSelect) {
             VStack(alignment: .leading, spacing: 14) {
-                HStack(alignment: .top, spacing: 14) {
-                    Image(systemName: "point.topleft.down.curvedto.point.bottomright.up")
-                        .font(.system(size: 22, weight: .medium))
-                        .foregroundStyle(SymphoTheme.primaryText)
-                        .frame(width: 52, height: 52)
-                        .glassEffect(.regular, in: .rect(cornerRadius: 16))
+                HStack(alignment: .top, spacing: 12) {
+                    if let index {
+                        OrdinalBadge(number: index)
+                    }
 
                     VStack(alignment: .leading, spacing: 5) {
-                        Text("TRACK")
-                            .font(.system(size: 9, weight: .bold))
-                            .foregroundStyle(SymphoTheme.tertiaryText)
-                            .tracking(0.6)
-
-                        Text(track.title)
-                            .font(.system(size: 16, weight: .semibold))
-                            .foregroundStyle(SymphoTheme.primaryText)
-                            .lineLimit(2)
-                            .multilineTextAlignment(.leading)
+                        HStack(spacing: 7) {
+                            if !track.emoji.isEmpty || !track.iconName.isEmpty {
+                                SymphoGlyphView(emoji: track.emoji, iconName: track.iconName,
+                                                fallbackSystemName: "square.stack.3d.up", size: 15)
+                                    .foregroundStyle(SymphoTheme.secondaryText)
+                            }
+                            Text(track.title)
+                                .font(.system(size: 16, weight: .semibold))
+                                .foregroundStyle(SymphoTheme.primaryText)
+                                .lineLimit(2)
+                                .multilineTextAlignment(.leading)
+                        }
 
                         if !track.desc.isEmpty {
                             Text(track.desc)
@@ -1497,11 +1662,16 @@ struct DomainTrackCard: View {
                     }
 
                     Spacer(minLength: 0)
+
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(SymphoTheme.tertiaryText)
+                        .opacity(isHovering ? 1 : 0.5)
                 }
 
                 HStack(spacing: 14) {
                     Label("\(activeModules.count) modules", systemImage: "square.stack.3d.up")
-                    Label("\(nodeCount) nodes", systemImage: "checklist")
+                    Label("\(nodeCount) nodes", systemImage: "circle.hexagonpath")
                 }
                 .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(SymphoTheme.secondaryText)
@@ -1517,32 +1687,22 @@ struct DomainTrackCard: View {
                             .foregroundStyle(SymphoTheme.secondaryText)
                     }
 
-                    GeometryReader { proxy in
-                        ZStack(alignment: .leading) {
-                            Capsule()
-                                .fill(SymphoTheme.dividerColor.opacity(0.55))
-                            Capsule()
-                                .fill(SymphoTheme.primaryText.opacity(0.82))
-                                .frame(width: max(6, proxy.size.width * track.progress))
-                        }
-                    }
-                    .frame(height: 5)
+                    DomainProgressBar(progress: track.progress)
                 }
             }
             .padding(16)
-            .frame(maxWidth: .infinity, minHeight: 168, alignment: .topLeading)
+            .frame(maxWidth: .infinity, minHeight: 152, alignment: .topLeading)
             .background {
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .fill(SymphoTheme.elevatedCanvas.opacity(isHovering ? 0.88 : 0.64))
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .fill(SymphoTheme.elevatedCanvas.opacity(isHovering ? 0.8 : 0.55))
             }
             .overlay {
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
                     .stroke(
-                        isHovering ? SymphoTheme.primaryText.opacity(0.14) : SymphoTheme.dividerColor,
+                        isHovering ? SymphoTheme.primaryText.opacity(0.16) : SymphoTheme.dividerColor,
                         lineWidth: 1
                     )
             }
-            .shadow(color: .black.opacity(isHovering ? 0.07 : 0.03), radius: isHovering ? 14 : 8, y: 4)
         }
         .buttonStyle(.plain)
         .onHover { isHovering = $0 }
@@ -1561,6 +1721,211 @@ struct DomainTrackCard: View {
         track.isDeletedLocally = true
         track.isSynced = false
         track.updatedAt = Date()
+        try? modelContext.save()
+    }
+}
+
+// MARK: - Shared domain UI pieces
+
+/// Small neutral numbered badge used to convey learning order.
+struct OrdinalBadge: View {
+    let number: Int
+
+    var body: some View {
+        Text("\(number)")
+            .font(.system(size: 12, weight: .semibold, design: .rounded))
+            .foregroundStyle(SymphoTheme.secondaryText)
+            .frame(width: 26, height: 26)
+            .background {
+                Circle().fill(SymphoTheme.elevatedCanvas.opacity(0.9))
+            }
+            .overlay {
+                Circle().stroke(SymphoTheme.dividerColor, lineWidth: 1)
+            }
+    }
+}
+
+/// Monochrome progress bar shared across track/module surfaces.
+struct DomainProgressBar: View {
+    let progress: Double
+    var height: CGFloat = 5
+
+    var body: some View {
+        GeometryReader { proxy in
+            ZStack(alignment: .leading) {
+                Capsule()
+                    .fill(SymphoTheme.dividerColor.opacity(0.5))
+                Capsule()
+                    .fill(SymphoTheme.primaryText.opacity(0.82))
+                    .frame(width: max(progress > 0 ? height : 0, proxy.size.width * progress))
+            }
+        }
+        .frame(height: height)
+    }
+}
+
+/// Compact single-line track row for the Tracks list layout.
+struct DomainTrackRow: View {
+    @Environment(\.modelContext) private var modelContext
+    let track: Track
+    var index: Int? = nil
+    var onSelect: () -> Void
+
+    @State private var isHovering = false
+    @State private var showsEditSheet = false
+
+    private var moduleCount: Int { track.modules.filter { !$0.isDeletedLocally }.count }
+    private var nodeCount: Int { track.allNodes.count }
+
+    var body: some View {
+        Button(action: onSelect) {
+            HStack(spacing: 12) {
+                #if os(macOS)
+                Image(systemName: "line.3.horizontal")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(SymphoTheme.tertiaryText)
+                    .opacity(isHovering ? 0.8 : 0.3)
+                #endif
+
+                if let index {
+                    OrdinalBadge(number: index)
+                }
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(track.title)
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(SymphoTheme.primaryText)
+                        .lineLimit(1)
+                    Text("\(moduleCount) module\(moduleCount == 1 ? "" : "s") · \(nodeCount) node\(nodeCount == 1 ? "" : "s")")
+                        .font(.system(size: 11))
+                        .foregroundStyle(SymphoTheme.secondaryText)
+                        .lineLimit(1)
+                }
+
+                Spacer(minLength: 12)
+
+                DomainProgressBar(progress: track.progress)
+                    .frame(width: 90)
+
+                Text("\(Int(track.progress * 100))%")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(SymphoTheme.secondaryText)
+                    .frame(width: 34, alignment: .trailing)
+
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(SymphoTheme.tertiaryText)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 11)
+            .background {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(SymphoTheme.elevatedCanvas.opacity(isHovering ? 0.7 : 0.45))
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .stroke(isHovering ? SymphoTheme.primaryText.opacity(0.14) : SymphoTheme.dividerColor, lineWidth: 1)
+            }
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovering = $0 }
+        .symphoCardContextMenu(
+            edit: { showsEditSheet = true },
+            delete: { softDelete() }
+        )
+        .sheet(isPresented: $showsEditSheet) {
+            SymphoItemEditSheet(subject: .track(track)) { showsEditSheet = false }
+        }
+    }
+
+    private func softDelete() {
+        track.isDeletedLocally = true
+        track.isSynced = false
+        track.updatedAt = Date()
+        try? modelContext.save()
+    }
+}
+
+/// Compact single-line module row for the Modules list layout.
+struct DomainModuleRow: View {
+    @Environment(\.modelContext) private var modelContext
+    let module: Module
+    var onSelect: () -> Void
+
+    @State private var isHovering = false
+    @State private var showsEditSheet = false
+
+    private var nodes: [Node] { module.nodes.filter { !$0.isDeletedLocally } }
+    private var progress: Double {
+        guard !nodes.isEmpty else { return 0 }
+        return Double(nodes.filter { $0.status == .mastered }.count) / Double(nodes.count)
+    }
+    private var parentTitle: String {
+        if let track = module.track, !track.isDeletedLocally { return track.title }
+        return "Standalone"
+    }
+
+    var body: some View {
+        Button(action: onSelect) {
+            HStack(spacing: 12) {
+                Image(systemName: "square.stack.3d.up")
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundStyle(SymphoTheme.secondaryText)
+                    .frame(width: 34, height: 34)
+                    .background(SymphoTheme.primaryCanvas.opacity(0.8), in: .rect(cornerRadius: 9))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 9, style: .continuous)
+                            .stroke(SymphoTheme.dividerColor, lineWidth: 1)
+                    }
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(module.title)
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(SymphoTheme.primaryText)
+                        .lineLimit(1)
+                    Text("\(parentTitle) · \(nodes.count) node\(nodes.count == 1 ? "" : "s")")
+                        .font(.system(size: 11))
+                        .foregroundStyle(SymphoTheme.secondaryText)
+                        .lineLimit(1)
+                }
+
+                Spacer(minLength: 12)
+
+                if !nodes.isEmpty {
+                    DomainProgressBar(progress: progress)
+                        .frame(width: 84)
+                }
+
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(SymphoTheme.tertiaryText)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 11)
+            .background {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(SymphoTheme.elevatedCanvas.opacity(isHovering ? 0.7 : 0.45))
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .stroke(isHovering ? SymphoTheme.primaryText.opacity(0.14) : SymphoTheme.dividerColor, lineWidth: 1)
+            }
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovering = $0 }
+        .symphoCardContextMenu(
+            edit: { showsEditSheet = true },
+            delete: { softDelete() }
+        )
+        .sheet(isPresented: $showsEditSheet) {
+            SymphoItemEditSheet(subject: .module(module)) { showsEditSheet = false }
+        }
+    }
+
+    private func softDelete() {
+        module.isDeletedLocally = true
+        module.isSynced = false
+        module.updatedAt = Date()
         try? modelContext.save()
     }
 }
@@ -1664,24 +2029,16 @@ struct DomainModuleCard: View {
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
         .background {
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .fill(SymphoTheme.elevatedCanvas.opacity(isHovering ? 0.9 : 0.58))
-        }
-        .overlay(alignment: .leading) {
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .fill(moduleAccentGradient)
-                .frame(width: 4)
-                .padding(.vertical, 14)
-                .padding(.leading, 1)
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(SymphoTheme.elevatedCanvas.opacity(isHovering ? 0.8 : 0.55))
         }
         .overlay {
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .stroke(
-                    isHovering ? SymphoTheme.primaryText.opacity(0.14) : SymphoTheme.dividerColor,
+                    isHovering ? SymphoTheme.primaryText.opacity(0.16) : SymphoTheme.dividerColor,
                     lineWidth: 1
                 )
         }
-        .shadow(color: .black.opacity(isHovering ? 0.06 : 0.03), radius: isHovering ? 12 : 8, y: 3)
         .onHover { isHovering = $0 }
         .symphoCardContextMenu(
             edit: { showsEditSheet = true },
@@ -1727,17 +2084,6 @@ struct DomainModuleCard: View {
             RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .stroke(SymphoTheme.dividerColor, lineWidth: 1)
         }
-    }
-
-    private var moduleAccentGradient: LinearGradient {
-        LinearGradient(
-            colors: [
-                SymphoTheme.colorMastered.opacity(0.55),
-                SymphoTheme.primaryText.opacity(0.2)
-            ],
-            startPoint: .top,
-            endPoint: .bottom
-        )
     }
 
     private var moduleProgressStrip: some View {

@@ -107,7 +107,6 @@ struct TrackModulesWorkspaceView: View {
         let nextIndex = modules.map(\.sortIndex).max().map { $0 + 1 } ?? 0
         let newModule = Module(title: title, desc: "", sortIndex: nextIndex, track: track)
         modelContext.insert(newModule)
-        track.modules.append(newModule)
         track.updatedAt = Date()
         track.isSynced = false
         if let domain = track.domain {
@@ -175,10 +174,17 @@ struct TrackModulesWorkspaceView: View {
 
             VStack(alignment: .leading, spacing: 6) {
                 Button { onSelectModule(module) } label: {
-                    Text(module.title)
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(SymphoTheme.primaryText)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                    HStack(spacing: 7) {
+                        if !module.emoji.isEmpty || !module.iconName.isEmpty {
+                            SymphoGlyphView(emoji: module.emoji, iconName: module.iconName,
+                                            fallbackSystemName: "square.stack", size: 13)
+                                .foregroundStyle(SymphoTheme.secondaryText)
+                        }
+                        Text(module.title)
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(SymphoTheme.primaryText)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
                 }
                 .buttonStyle(.plain)
 
@@ -198,9 +204,15 @@ struct TrackModulesWorkspaceView: View {
                         ForEach(nodes.prefix(4)) { node in
                             Button { onSelectNode(node) } label: {
                                 HStack(spacing: 6) {
-                                    Image(systemName: nodeStatusIcon(node.status))
-                                        .font(.system(size: 10))
-                                        .foregroundStyle(roadmapNodeColor(node.status))
+                                    if !node.emoji.isEmpty || !node.iconName.isEmpty {
+                                        SymphoGlyphView(emoji: node.emoji, iconName: node.iconName,
+                                                        fallbackSystemName: nodeStatusIcon(node.status), size: 10)
+                                            .foregroundStyle(roadmapNodeColor(node.status))
+                                    } else {
+                                        Image(systemName: nodeStatusIcon(node.status))
+                                            .font(.system(size: 10))
+                                            .foregroundStyle(roadmapNodeColor(node.status))
+                                    }
                                     Text(node.title)
                                         .font(.system(size: 11))
                                         .foregroundStyle(SymphoTheme.primaryText)
